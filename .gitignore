@@ -1,0 +1,65 @@
+# Built application files
+*.apk
+*.aar
+*.so
+*.ap_
+*.aab
+
+# Gradle & Android Studio files
+.gradle/
+build/
+app/build/
+benchmark/build/
+/local.properties
+/.idea/
+*.iml
+.cxx/
+.externalNativeBuild/
+/captures/
+/.kotlin/sessions/
+app/google-services.json
+app/src/headless/assets
+/.knownPackages
+/*.patch
+/build-tools/
+/emulator/
+/licenses/
+/patcher/
+/platform-tools/
+/platforms/
+/tools/
+/app/release/
+app/fdroidFull/release/
+app/playFull/release/
+app/websiteFull/release/
+
+# Go build & test artifacts
+firestack/bin/
+firestack/build/
+firestack/split-dialer
+*.test
+*.prof
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.egg-info/
+dist/
+eggs/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+env/
+
+# OS and Editor artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/

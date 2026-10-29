@@ -1,0 +1,661 @@
+// Copyright (c) 2025 RethinkDNS and its authors.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+package dnsx
+
+import (
+	"context"
+	"net/netip"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	x "github.com/celzero/firestack/intra/backend"
+	"github.com/celzero/firestack/intra/core"
+	"github.com/celzero/firestack/intra/log"
+	"github.com/celzero/firestack/intra/settings"
+	"github.com/celzero/firestack/intra/xdns"
+	"github.com/miekg/dns"
+)
+
+const plusSupportsCachedTransports = false
+const plusUsesPreferred = false
+const plusUsesSystem = false
+const plusSupportsRelay = false
+
+const plusMaxTries = 6
+
+const ttl10s = 10 * time.Second
+
+var fakePlusIpports = []netip.AddrPort{
+	netip.MustParseAddrPort("[fdaa:9125::9]:53"),
+}
+
+type filterFlags uint8
+
+// 0 is no filters
+const (
+	filterAd filterFlags = 1 << iota
+	filterSec
+	filterFam
+)
+
+type filterAttr struct {
+	typ, addr string // lowercase
+	mask      filterFlags
+}
+
+func (a filterAttr) has(f filterFlags) bool { return a.mask&f != 0 }
+
+func blocksAd(enc bool, addr string) bool {
+	return enc && (strings.Contains(addr, "dns.adguard-dns") ||
+		strings.Contains(addr, "noads.joindns4") ||
+		strings.Contains(addr, "p2.freedns.controld")) ||
+		strings.Contains(addr, "freedns.controld.com/p2")
+}
+
+func blocksMal(enc bool, addr string) bool {
+	return enc && (strings.Contains(addr, "dns.quad9") ||
+		strings.Contains(addr, "9.9.9.9") ||
+		strings.Contains(addr, "security.cloudflare-dns") ||
+		strings.Contains(addr, "p1.freedns.controld")) ||
+		strings.Contains(addr, "freedns.controld.com/p1") ||
+		strings.Contains(addr, "security-filter-dns.cleanbrowsing") ||
+		strings.Contains(addr, "doh.cleanbrowsing.org/doh/security-filter")
+}
+
+func blocksUnsafe(enc bool, addr string) bool {
+	// adguard-dns.io/en/public-dns.html
+	// quad9.net/service/service-addresses-and-features
+	// controld.com/free-dns#quick-setups
+	// developers.cloudflare.com/1.1.1.1/setup
+	// cleanbrowsing.org/learn/what-is-encrypted-dns
+	return enc && (strings.Contains(addr, "doh.cleanbrowsing.org/doh/family-filter") ||
+		strings.Contains(addr, "family-filter-dns.cleanbrowsing") ||
+		strings.Contains(addr, "adult-filter-dns.cleanbrowsing.org") ||
+		strings.Contains(addr, "doh.cleanbrowsing.org/doh/adult-filter") ||
+		strings.Contains(addr, "family.cloudflare-dns.com") ||
+		strings.Contains(addr, "1.1.1.3") ||
+		strings.Contains(addr, "family.freedns.controld.com")) ||
+		strings.Contains(addr, "freedns.controld.com/family") ||
+		strings.Contains(addr, "family.adguard-dns")
+}
+
+func makeFilterAttr(typ, addr string) filterAttr {
+	var mask filterFlags
+	enc := isEncrypted(typ)
+	if blocksAd(enc, addr) {
+		mask |= filterAd
+	}
+	if blocksMal(enc, addr) {
+		mask |= filterSec
+	}
+	if blocksUnsafe(enc, addr) {
+		mask |= filterFam
+	}
+	return filterAttr{typ: typ, addr: addr, mask: mask}
+}
+
+func (t *plus) classifyFilterFor(tr Transport) {
+	if tr == nil {
+		return
+	}
+	id := tr.ID()
+	if len(id) <= 0 {
+		return
+	}
+	typ := tr.Type()
+	addr := strings.ToLower(tr.OriginalAddr())
+	if len(addr) <= 0 {
+		return
+	}
+	t.filter.Store(id, makeFilterAttr(typ, addr))
+}
+
+func (t *plus) fattr(tr Transport) filterAttr {
+	id := tr.ID()
+	typ := tr.Type()
+	addr := strings.ToLower(tr.OriginalAddr())
+	if len(id) <= 0 || len(addr) <= 0 {
+		// do not cache id-less or addr-less transports; a later lookup
+		// after the transport gains an addr must not see a stale empty entry.
+		if len(addr) <= 0 {
+			return filterAttr{typ: typ, addr: addr}
+		}
+		return makeFilterAttr(typ, addr)
+	}
+	if v, ok := t.filter.Load(id); ok {
+		if attr, ok := v.(filterAttr); ok && attr.typ == typ && attr.addr == addr {
+			return attr
+		} // else: transport with id has swapped out for another type / orig-addr
+	}
+	attr := makeFilterAttr(typ, addr)
+	t.filter.Store(id, attr)
+	return attr
+}
+
+type plus struct {
+	mu sync.RWMutex // protects all
+	// id => transport; should contain transports owned by Plus
+	transports map[string]Transport
+
+	r       TransportProviderInternal
+	ctx     context.Context
+	done    context.CancelFunc
+	ipports []netip.AddrPort
+
+	ba *core.Barrier[[]Transport, string]
+
+	closed atomic.Bool
+	last   core.MutexValue[Transport]
+
+	// filter memoizes plus filter classifications per transport;
+	// keys are tr.ID() => plusFilterAttr.
+	filter sync.Map // string => plusFilterAttr
+}
+
+var _ Transport = (*plus)(nil)
+var _ TransportMult = (*plus)(nil)
+
+func NewPlusTransport(ctx context.Context, r TransportProviderInternal, ts ...Transport) Transport {
+	ctx, done := context.WithCancel(ctx)
+	t := &plus{
+		ctx:        ctx,
+		transports: make(map[string]Transport, len(ts)),
+		ba:         core.NewBarrier[[]Transport](ctx, "dnsx.p.bar", ttl10s),
+		r:          r,
+		done:       done,
+		ipports:    fakePlusIpports,
+	}
+	context.AfterFunc(ctx, t.stopAll)
+
+	// ctx may be cancelled before all transports have had the
+	// chance to register; the mutex prevents that race.
+	t.mu.Lock()
+	for _, tr := range ts {
+		if len(idstr(tr)) > 0 {
+			t.transports[tr.ID()] = tr
+		}
+	}
+	t.mu.Unlock()
+	// classify outside the mutex: tr.OriginalAddr/Type must never run under t.mu.
+	for _, tr := range ts {
+		t.classifyFilterFor(tr)
+	}
+
+	log.I("plus: at %s; added: %d/%d", t.GetAddr(), len(t.transports), len(ts))
+	return t
+}
+
+func (t *plus) stopAll() {
+	t.closed.Store(true)
+
+	t.mu.Lock()
+	trs := t.allLocked()
+	clear(t.transports)
+	t.mu.Unlock()
+
+	for _, tr := range trs {
+		if err := tr.Stop(); err != nil {
+			log.E("plus: (%s) stop: %v", t.ID(), err)
+		}
+	}
+
+	t.last.Store(nil)
+	// clear memoized filter classifications
+	t.filter.Clear()
+}
+
+func (t *plus) all() []Transport {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return t.allLocked()
+}
+
+func (t *plus) allLocked() []Transport {
+	const all = 0
+	return vals(t.transports, all)
+}
+
+func (t *plus) ID() string {
+	// must match with how wrapping transports like DcProxy / Gateway rely on the ID
+	return Plus
+}
+
+func (t *plus) Type() string {
+	return DOH
+}
+
+func (t *plus) latest() Transport {
+	if t.closed.Load() {
+		return nil
+	}
+
+	if l := t.last.Load(); l != nil {
+		return l
+	}
+
+	if ts := t.all(); len(ts) > 0 {
+		return ts[0]
+	}
+	return nil
+}
+
+func (t *plus) defaultdns() (Transport, error) {
+	return t.r.GetInternal(Default)
+}
+
+func (t *plus) systemdns() (Transport, error) {
+	if !plusUsesSystem {
+		return nil, errNoSuchTransport
+	}
+	return t.r.GetInternal(System) // may return Goos or Default
+}
+
+func (t *plus) preferreddns() (Transport, error) {
+	if !plusUsesPreferred {
+		return nil, errNoSuchTransport
+	}
+	return t.r.GetInternal(Preferred) // may return Default
+}
+
+func (t *plus) ordered() ([]Transport, error) {
+	_, _, best, preferred, recov, errored, ended := Categorize(t.all())
+
+	expected := len(best) + len(preferred) + len(recov) + 1
+
+	ord := make([]Transport, 0, expected)
+
+	if l := t.latest(); l != nil {
+		ord = append(ord, l) // latest may be nil
+	}
+	ord = append(ord, best...)
+	d, _ := t.defaultdns()
+	if d != nil {
+		ord = append(ord, d)
+	}
+	sys, _ := t.systemdns()
+	if sys != nil && idstr(d) != idstr(sys) {
+		ord = append(ord, sys)
+	}
+	p, _ := t.preferreddns()
+	if p != nil && idstr(d) != idstr(p) {
+		ord = append(ord, p)
+	}
+	ord = append(ord, preferred...)
+	ord = append(ord, recov...)
+
+	ord = core.CopyUniq(ord)
+
+	deduped := ord
+	strat := settings.PlusStrat.Load()
+	filter := settings.PlusFilter.Load()
+
+	refiltered := false
+refilter:
+	switch strat {
+	case settings.PlusOrderSafest:
+		ord = core.FilterLeft(ord, IsEncrypted)
+	case settings.PlusOrderRandom:
+		ord = core.ShuffleInPlace(ord)
+	case settings.PlusOrderFastest:
+		ord = core.Sort(ord, Fastest)
+	case settings.PlusOrderRobust:
+		// nothing to do
+	}
+
+	if !refiltered && len(ord) < plusMaxTries {
+		ord = core.CopyUniq(ord, errored)
+		refiltered = true
+		goto refilter
+	}
+
+	if filter != settings.PlusFilterNone {
+		fn := t.plusIsAdblock // default if none not set
+		switch filter {
+		case settings.PlusFilterAdblock:
+		case settings.PlusFilterSecurity:
+			fn = t.plusIsSecurity
+		case settings.PlusFilterFamily:
+			fn = t.plusIsFamily
+		}
+		// keep only encrypted transports from adguard or mullvad;
+		// unlike PlusOrder*, this filter is never relaxed on refilter
+		f := core.FilterLeft(ord, fn)
+		if len(f) <= 0 {
+			log.W("plus: strat %d: filter %d: no adguard/mullvad transports avail [exp: %d]: chosen: %s / pref: %s / errored: %v / ended: %v",
+				strat, filter, expected, infcsv(ord...), infcsv(preferred...), infcsv(errored...), infcsv(ended...))
+			return nil, errTransportMultFilter
+		}
+		ord = f
+	}
+
+	if len(ord) <= 0 {
+		log.W("plus: strat %d: zero transports avail [exp: %d]: sys? %s / pref: %s / errored: %v / ended: %v",
+			strat, expected, idstr(sys), infcsv(preferred...), infcsv(errored...), infcsv(ended...))
+		if filter != settings.PlusFilterNone {
+			return nil, errTransportMultFilter
+		}
+		return nil, errNoSuchTransport
+	} else if len(ord) < len(deduped) {
+		log.VV("plus: strat %d: filtered %d < deduped %d; chosen: %s / pref: %v",
+			strat, len(ord), len(deduped), infcsv(ord...), infcsv(preferred...))
+	}
+
+	return ord, nil
+}
+
+// plusIsAdblock implements settings.PlusFilterAdblock.
+func (t *plus) plusIsAdblock(tr Transport) bool {
+	if tr == nil {
+		return false
+	}
+	return t.fattr(tr).has(filterAd)
+}
+
+// plusIsSecurity implements settings.PlusFilterSecurity.
+func (t *plus) plusIsSecurity(tr Transport) bool {
+	if tr == nil {
+		return false
+	}
+	return t.fattr(tr).has(filterSec)
+}
+
+// plusIsFamily implements settings.PlusFilterFamily.
+func (t *plus) plusIsFamily(tr Transport) bool {
+	if tr == nil {
+		return false
+	}
+	return t.fattr(tr).has(filterFam)
+}
+
+func (t *plus) Query(network string, q *dns.Msg, smm *x.DNSSummary) (ans *dns.Msg, err error) {
+	if t.closed.Load() {
+		return nil, NewEndQueryError()
+	}
+
+	ord, err := t.ba.DoIt("plus.q."+network, t.ordered)
+	if err != nil {
+		return nil, err
+	}
+	return t.forward(network, q, smm, ord...)
+}
+
+func (t *plus) forward(network string, q *dns.Msg, outSmm *x.DNSSummary, all ...Transport) (finalans *dns.Msg, errs error) {
+	qname := qname(q)
+	qtyp := qtype(q)
+	tries := plusMaxTries
+	visited := make(map[string]struct{}, len(all))
+	finalsmm := copySummary(outSmm)
+	fid := outSmm.FID
+
+	defer func() {
+		fillSummary(finalsmm, outSmm)
+		if finalans != nil { // suppress errors
+			log.D4(fid, "plus: suppressing errors for %s:%d[%s]: %v", qname, qtyp, outSmm.RData, errs)
+			errs = nil
+		}
+	}()
+
+	for _, tr := range all {
+		cursmm := copySummary(outSmm)
+
+		if len(visited) >= tries {
+			break
+		}
+
+		if tr == nil { // unlikely
+			errs = core.JoinErr(errs, errNoSuchTransport)
+			continue
+		}
+
+		id := tr.ID()
+		if plusSupportsCachedTransports {
+			id, _ = strings.CutPrefix(id, CT)
+		}
+		if _, ok := visited[id]; ok {
+			continue
+		}
+		visited[id] = struct{}{}
+
+		ans, err := tr.Query(network, q, cursmm)
+
+		failed := xdns.IsServFailOrInvalid(ans)
+		noans := !failed && !xdns.HasAnyAnswer(ans)
+		ipblock := xdns.HasAQuadAQuestion(q) && xdns.AQuadAUnspecified(ans)
+		// HTTPS/SVCB blocks have 0 answer records when blocked
+		svcbblock := (xdns.HasHTTPQuestion(q) || xdns.HasSVCBQuestion(q)) && noans
+
+		finalsmm = cursmm // overwritten each iteration; on exit, reflects the last queried transport
+
+		loged4(fid, err != nil || failed)("plus: queried %s for %s:%d (fid: %s); data: %s [noans? %t], code: %d, err? %v",
+			idstr(tr), qname, qtyp, fid, finalsmm.RData, noans, finalsmm.RCode, err)
+
+		if err != nil || ans == nil {
+			errs = core.JoinErr(errs, core.OneErr(err, errNoAnswer))
+			continue
+		}
+
+		finalans = ans // may be this is the final answer
+
+		if failed {
+			errs = core.JoinErr(errs, errServFail)
+			continue
+		}
+
+		if ipblock || svcbblock {
+			errs = core.JoinErr(errs, errBlocked)
+			continue
+		}
+
+		// an ipv4 only service/website will always return nxdomain (no answer)
+		// for ipv6 queries, and so, always treating those as errors is not
+		// what we want but instead to note the nxdomain response down and see
+		// if other resolvers return an answer or not (censoring resolvers may
+		// also return nxdomain or blocked answers, which is why we must continue
+		// to try other resolvers).
+		if noans { // servfail, nxdomain, etc.
+			errs = core.JoinErr(errs, errNoAnswer)
+			// wind down faster if multiple transports return no answer
+			if len(visited) <= tries/2 {
+				continue
+			} // fallthrough and return current finalans
+		}
+
+		t.last.Store(tr)
+		return // current finalans
+	}
+
+	log.W4(fid, "plus: [exp: %d / tried: %d]: all transports failed: %v", len(all), len(visited), errs)
+	return // finalans probably nil
+}
+
+func (t *plus) P50() int64 {
+	if l := t.latest(); l != nil {
+		return l.P50()
+	}
+	return 0
+}
+
+func (t *plus) GetAddr() string {
+	return TransportPrefix(t.ID()) + t.ipports[0].String()
+}
+
+func (t *plus) OriginalAddr() string {
+	if l := t.latest(); l != nil {
+		return l.OriginalAddr()
+	}
+	return ""
+}
+
+func (t *plus) Measure(mid string, n, seconds int32) *x.DNSMeasurement {
+	return Perf(t, mid, n, seconds)
+}
+
+func (t *plus) GetRelay() x.Proxy {
+	return nil
+}
+
+// Relaying implements dnsx.Transport
+func (t *plus) Relaying() bool {
+	return false // never implements relays
+}
+
+func (t *plus) IPPorts() []netip.AddrPort {
+	return t.ipports
+}
+
+func (t *plus) GetIPs(id string) string {
+	if tr, err := t.GetInternal(id); err == nil {
+		return GetIPCsv(tr)
+	}
+	return ""
+}
+
+func (t *plus) Status() int32 {
+	if l := t.latest(); l != nil {
+		return l.Status()
+	}
+	return ClientError // see also: bootstrap.go
+}
+
+func (t *plus) Stop() error {
+	t.done()
+	return nil
+}
+
+// Add implements TransportMult.
+func (t *plus) Add(tr x.DNSTransport) bool {
+	if tr == nil || core.IsNil(tr) || t.closed.Load() {
+		return false
+	}
+
+	newt, ok := tr.(Transport)
+	if !ok { // unlikely
+		log.W("plus: add %s: cannot cast %T to Transport", tr.ID(), tr)
+		return false
+	}
+
+	relayingTransport := newt.Relaying()
+	if relayingTransport && !plusSupportsRelay {
+		log.E("plus: add %s@%s: no relaying transports", newt.ID(), newt.GetAddr())
+		return false
+	}
+
+	cachingTransport := cachedTransport(newt)
+	oldTransportStopped := false
+	if !plusSupportsCachedTransports && cachingTransport {
+		log.W("plus: add %s@%s: err no cached transports", newt.ID(), newt.GetAddr())
+		return false
+	}
+
+	t.mu.Lock()
+	if oldt, ok := t.transports[tr.ID()]; ok {
+		if core.PtrEq(oldt, newt) {
+			t.mu.Unlock()
+			log.I("plus: add %s@%s: already present", newt.ID(), newt.GetAddr())
+			t.classifyFilterFor(newt)
+			return true
+		}
+		core.Gxe("plus.stop."+oldt.ID(), oldt.Stop)
+		oldTransportStopped = true
+	}
+
+	t.transports[tr.ID()] = newt
+	t.mu.Unlock()
+	t.classifyFilterFor(newt)
+
+	log.I("plus: add %s@%s; old stopped? %t, cacher? %t",
+		newt.ID(), newt.GetAddr(), oldTransportStopped, cachingTransport)
+	return true
+}
+
+// Remove implements TransportMult.
+func (t *plus) Remove(id string) (y bool) {
+	t.mu.Lock()
+	tr := t.transports[id]
+	delete(t.transports, id)
+	t.mu.Unlock()
+
+	t.filter.Delete(id)
+	if tr != nil {
+		tr.Stop()
+		y = true
+	}
+
+	log.I("plus: remove: %s? %t", id, y)
+
+	return
+}
+
+// Get implements TransportMult.
+func (t *plus) Get(id string) (x.DNSTransport, error) {
+	return t.GetInternal(id)
+}
+
+// GetInternal implements TransportMult.
+func (t *plus) GetInternal(id string) (Transport, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if tr, ok := t.transports[id]; ok {
+		return tr, nil
+	}
+	return nil, errNoSuchTransport
+}
+
+func (t *plus) refresh() {
+	// redo filter classifications;
+	t.filter.Clear()
+	for _, tr := range t.all() {
+		t.classifyFilterFor(tr)
+	}
+	if !plusSupportsCachedTransports {
+		return
+	}
+	for _, t := range t.all() {
+		// clear caches of cached transports:
+		if ct := asCachedTransport(t); ct != nil {
+			ct.Clear() // one at a time ...
+		}
+	}
+}
+
+// Refresh implements TransportMult.
+func (t *plus) Refresh() (string, error) {
+	// dialers.Clear in transport.go already clears the cache
+	// that holds ips <> doh hostnames mapping.
+	core.Gx("plus.refresh", t.refresh)
+	return t.LiveTransports(), nil
+}
+
+// LiveTransports implements TransportMult.
+func (t *plus) LiveTransports() string {
+	var ids []string
+	for _, tr := range t.all() {
+		if activeTransport(tr) {
+			ids = append(ids, tr.ID())
+		}
+	}
+
+	return strings.Join(ids, ",")
+}
+
+func loged(cond bool) log.LogFn {
+	if cond {
+		return log.E
+	}
+	return log.D
+}
+
+func loged4(key string, cond bool) log.LogFn {
+	if cond {
+		return func(msg string, args ...any) { log.E4(key, msg, args...) }
+	}
+	return func(msg string, args ...any) { log.D4(key, msg, args...) }
+}

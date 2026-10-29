@@ -1,0 +1,89 @@
+name: AegisDNS App Build & Test Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-core:
+    name: 🛡️ Test Aegis Core Engine
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Package
+        run: |
+          pip install --upgrade pip
+          pip install -e core/
+
+      - name: Run Python Core Unit Tests
+        run: |
+          python3 -m unittest discover -s core/tests -p "test_*.py" -v
+
+  test-firestack:
+    name: ⚡ Test Firestack Networking Core
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: firestack/go.sum
+
+      - name: Run Go Unit Tests
+        working-directory: firestack
+        run: |
+          go test -v ./intra/xdns
+          go test -v ./intra/core/wire
+
+  build-android:
+    name: 📱 Build Android App (AegisDNS)
+    runs-on: ubuntu-latest
+    needs: [test-core, test-firestack]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Grant Execute Permission to gradlew
+        run: chmod +x gradlew
+
+      - name: Build Android Debug APK
+        run: |
+          ./gradlew assembleFdroidFullDebug --stacktrace --no-daemon
+
+      - name: Upload Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: AegisDNS-Debug-APK
+          path: app/build/outputs/apk/**/app-*-debug.apk
+          if-no-files-found: warn

@@ -1,0 +1,21 @@
+# AegisDNS / RethinkCore Default Privacy & Security Blocklist
+# Compatible with /etc/hosts format, Adblock syntax, and plain domains
+
+# Advertising & Telemetry
+0.0.0.0 adservice.google.com
+0.0.0.0 pagead2.googlesyndication.com
+0.0.0.0 ads.pubmatic.com
+0.0.0.0 adserver.adtechus.com
+0.0.0.0 telemetry.microsoft.com
+0.0.0.0 vortex.data.microsoft.com
+
+# AdBlock syntax wildcards
+||doubleclick.net^
+||adnxs.com^
+||scorecardresearch.com^
+||criteo.com^
+||analytics.facebook.com^
+
+# Suspicious IP CIDR range
+198.51.100.0/24
+203.0.113.0/24

@@ -1,0 +1,468 @@
+// Copyright (c) 2026 RethinkDNS and its authors.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+package netstack
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"github.com/celzero/firestack/intra/core"
+	"github.com/celzero/firestack/intra/log"
+	glog "gvisor.dev/gvisor/pkg/log"
+	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
+)
+
+// Clearing endpoint on Dispose will result in all stack.Linkpoint APIs
+// returning zero values (which may trip netstack?)
+const clearEndpointOnDispose = false
+
+type FdSwapper interface {
+	// Swap closes existing FDs; uses new fd.
+	Swap(fd, mtu int) error
+	// Dispose closes all existing FDs.
+	Dispose() error
+	// Stat returns EpStat (fd, age, read, written, lastRead, lastWrite).
+	Stat() EpStat
+}
+
+type EpStat struct {
+	// Fd is the file descriptor of the endpoint.
+	Fd int
+	// Alive indicates whether the endpoint is alive.
+	Alive bool
+	// Age is the age of the endpoint.
+	Age string
+	// Read is the number of bytes read from the endpoint.
+	Read string
+	// Written is the number of bytes written to the endpoint.
+	Written string
+	// LastRead is the last time the endpoint was read from.
+	LastRead string
+	// LastWrite is the last time the endpoint was written to.
+	LastWrite string
+	// IOStart is the time the endpoint's dispatcher was started.
+	IOStart string
+	// IOEnd is the time the endpoint's dispatcher was stopped.
+	IOEnd string
+}
+
+func (s EpStat) String() string {
+	if s.Fd == 0 {
+		return "<nil>"
+	}
+	return fmt.Sprintf("Fd: %d,Alive: %t,Age: %s,R: %s,W: %s,LastRead: %s,LastWrite: %s, IOStart: %s,IOEnd: %s",
+		s.Fd,
+		s.Alive,
+		s.Age,
+		s.Read,
+		s.Written,
+		s.LastRead,
+		s.LastWrite,
+		s.IOStart,
+		s.IOEnd)
+}
+
+type SeamlessEndpoint interface {
+	stack.LinkEndpoint
+	FdSwapper
+}
+
+type linkstate struct {
+	e SeamlessEndpoint
+	d stack.NetworkDispatcher
+}
+
+type magiclink struct {
+	// mu serializes lifecycle operations. Callback methods intentionally read
+	// state without mu because endpoint shutdown can wait for callbacks that
+	// re-enter this magiclink.
+	mu    sync.Mutex
+	state atomic.Pointer[linkstate]
+	s     io.WriteCloser
+}
+
+var _ stack.LinkEndpoint = (*magiclink)(nil)
+var _ stack.NetworkDispatcher = (*magiclink)(nil)
+var _ stack.GSOEndpoint = (*magiclink)(nil)
+var _ SeamlessEndpoint = (*magiclink)(nil)
+
+var errMissingSink = errors.New("magic: pcap sink is nil")
+
+type emitter struct{}
+
+func init() {
+	glog.SetTarget(emitter{})
+}
+
+func (g emitter) Emit(depth int, level glog.Level, _ time.Time, format string, args ...any) {
+	switch level {
+	case glog.Debug:
+		log.D2(depth+1, format, args...)
+	case glog.Info:
+		log.I2(depth+1, format, args...)
+	case glog.Warning:
+		log.W2(depth+1, format, args...)
+	default:
+		log.VV2(depth+1, format, args...)
+	}
+}
+
+// ref: github.com/google/gvisor/blob/91f58d2cc/pkg/tcpip/sample/tun_tcp_echo/main.go#L102
+func NewEndpoint(dev, mtu int, sink io.WriteCloser) (ep SeamlessEndpoint, err error) {
+	defer func() {
+		if err != nil {
+			_ = syscall.Close(dev)
+		}
+		log.I("netstack: new endpoint(fd:%d / mtu:%d); err? %v", dev, mtu, err)
+	}()
+
+	if sink == nil {
+		return nil, errMissingSink
+	}
+
+	umtu := uint32(mtu)
+	opt := Options{
+		FDs: []int{dev},
+		MTU: umtu,
+	}
+
+	if ep, err = newFdbasedInjectableEndpoint(&opt); err != nil {
+		return nil, err
+	}
+
+	m := magiclink{}
+	m.s = sink
+	// ref: github.com/google/gvisor/blob/aeabb785278/pkg/tcpip/link/sniffer/sniffer.go#L111-L131
+	m.storeCurrent(ep, nil)
+
+	return &m, nil
+}
+
+func DebugLog(y bool) (l string) {
+	if y {
+		glog.SetLevel(glog.Debug)
+	} else {
+		glog.SetLevel(glog.Info)
+	}
+	return glog.Log().Level.String()
+}
+
+func Pcap2Stdout(y bool) (ok bool) {
+	if y {
+		ok = logPackets.CompareAndSwap(0, 1)
+	} else {
+		ok = logPackets.CompareAndSwap(1, 0)
+	}
+	log.I("netstack: pcap stdout(%t): done?(%t)", y, ok)
+	return
+}
+
+func Pcap2File(y bool) (ok bool) {
+	if y {
+		ok = writePCAP.CompareAndSwap(0, 1)
+	} else {
+		ok = writePCAP.CompareAndSwap(1, 0)
+	}
+	log.I("netstack: pcap file(%t): done?(%t)", y, ok)
+	return
+}
+
+// PCAP logging modes:
+// - stdout: packets are logged to stdout
+// - file: packets are logged to a file
+// - none: no packets are logged
+func PcapModes() string {
+	var modes []string
+	if logPackets.Load() == 1 {
+		modes = append(modes, "stdout")
+	}
+	if writePCAP.Load() == 1 {
+		modes = append(modes, "file")
+	}
+	if len(modes) == 0 {
+		return "none"
+	}
+	return strings.Join(modes, ",")
+}
+
+func (l *magiclink) get() (SeamlessEndpoint, stack.NetworkDispatcher) {
+	if state := l.state.Load(); state != nil {
+		return state.e, state.d
+	}
+	return nil, nil
+}
+
+func (l *magiclink) storeCurrent(e SeamlessEndpoint, d stack.NetworkDispatcher) {
+	l.state.Store(&linkstate{e: e, d: d})
+}
+
+// Swap implements SeamlessEndpoint.
+func (l *magiclink) Swap(fd, mtu int) (err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	e, d := l.get()
+	hasSwappedFd := false
+	needsNewEndpoint := e == nil
+	if e != nil {
+		err = e.Swap(fd, mtu)
+		hasSwappedFd = err == nil
+		needsNewEndpoint = errors.Is(err, errNeedsNewEndpoint)
+	}
+
+	if hasSwappedFd || !needsNewEndpoint {
+		// gVisor's CreateNIC calls magiclink.Attach(nic), which stores nic in
+		// d and attaches the current raw endpoint with the magiclink as its
+		// NetworkDispatcher. A successful raw endpoint Swap normally starts
+		// the replacement read loop itself when that raw endpoint is attached.
+		//
+		// If the raw endpoint was detached or its dispatcher state was lost,
+		// e.Swap can still succeed and replace the fd without starting a loop,
+		// while d still proves that the stable magiclink remains attached to
+		// gVisor's NIC. In that split state, inbound packets stop at the TUN
+		// fd and the endpoint cannot deliver them to the stack, so later
+		// protocol traffic may never reach the normal TCP/UDP/ICMP paths or
+		// produce outbound WritePackets calls.
+		//
+		// Reattach the raw endpoint directly to l to restart its dispatcher
+		// loop. Do not call l.Attach here: l.mu is held by Swap, and l.Attach
+		// would try to acquire the same non-reentrant mutex and deadlock.
+		if err == nil && d != nil && e != nil && !e.IsAttached() {
+			e.Attach(l)
+		}
+		logei(!hasSwappedFd)("netstack: magic(%d); swap: ok? %t; err? %v",
+			fd, hasSwappedFd, err)
+		return err
+	}
+
+	umtu := uint32(mtu)
+	opt := Options{
+		FDs: []int{fd},
+		MTU: umtu,
+	}
+
+	ep, err := newFdbasedInjectableEndpoint(&opt)
+	if err != nil || ep == nil {
+		log.E("netstack: magic(%d); swap: ep missing? %t; err %v", fd, ep == nil, err)
+		return core.OneErr(err, errMissingEp)
+	}
+
+	// swap endpoints after the dispatchLoop has had the chance to start
+	// to avoid cases where clients end up calling ep.Wait() before dispatchLoop
+	// could begin (as it is responsible for keeping ep alive)
+	if old := l.state.Swap(&linkstate{e: ep, d: d}); old != nil && old.e != nil {
+		// Close signals the dispatch loop to stop via stopfd.
+		// Wait ensures the goroutine has fully exited and all
+		// FDs/buffers are released. Without Wait, the goroutine
+		// can linger, leaking resources.
+		old.e.Close()
+		old.e.Wait()
+	}
+
+	// attach eventually runs a dispatchLoop which kickstarts the endpoint's
+	// delivery of packets to netstack's dispatcher. It must happen after Waiting
+	// on previous endpoint to close (which calls prompts netstack to detach dispatcher)
+	if d == nil {
+		ep.Attach(nil) // attach the new endpoint to the dispatcher
+	} else {
+		ep.Attach(l) // attach the new endpoint to the existing dispatcher
+	}
+
+	logei(d == nil)("netstack: magic(%d) mtu: %d; swap: new ep... dispatch? %t",
+		fd, umtu, d != nil)
+
+	return nil
+}
+
+// Dispose implements SeamlessEndpoint.
+func (l *magiclink) Dispose() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	e, d := l.get()
+	if e != nil {
+		if clearEndpointOnDispose {
+			// will result in stack.LinkEndpoint impls return zero values
+			// unsure if this will trip netstack in to thinking if this
+			// endpoint is kaput, when in reality, this endpoint can swap
+			// in a healthy endpoint at a later point in time, which then
+			// we'd expect netstack to use as expected.
+			l.storeCurrent(nil, d)
+		}
+		return e.Dispose()
+	}
+	log.W("netstack: magic: dispose; no endpoint")
+	return nil
+}
+
+// Stat implements SeamlessEndpoint.
+func (l *magiclink) Stat() EpStat {
+	if e, _ := l.get(); e != nil {
+		return e.Stat()
+	}
+	return EpStat{}
+}
+
+func (l *magiclink) MTU() uint32 {
+	if e, _ := l.get(); e != nil {
+		return e.MTU()
+	}
+	return 0
+}
+
+func (l *magiclink) SetMTU(mtu uint32) {
+	if e, _ := l.get(); e != nil {
+		e.SetMTU(mtu)
+	}
+}
+
+func (l *magiclink) MaxHeaderLength() uint16 {
+	if e, _ := l.get(); e != nil {
+		return e.MaxHeaderLength()
+	}
+	return 0
+}
+
+func (l *magiclink) LinkAddress() tcpip.LinkAddress {
+	if e, _ := l.get(); e != nil {
+		return e.LinkAddress()
+	}
+	return ""
+}
+
+func (l *magiclink) SetLinkAddress(addr tcpip.LinkAddress) {
+	if e, _ := l.get(); e != nil {
+		e.SetLinkAddress(addr)
+	}
+}
+
+func (l *magiclink) Capabilities() stack.LinkEndpointCapabilities {
+	if e, _ := l.get(); e != nil {
+		return e.Capabilities()
+	}
+	return 0
+}
+
+func (l *magiclink) Attach(dispatcher stack.NetworkDispatcher) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	e, _ := l.get()
+	l.storeCurrent(e, dispatcher)
+	if e != nil {
+		if dispatcher == nil {
+			e.Attach(nil) // detach
+		} else {
+			e.Attach(l)
+		}
+	}
+	log.I("netstack: magic: attach dispatcher? %t", dispatcher != nil)
+}
+
+func (l *magiclink) IsAttached() bool {
+	if e, _ := l.get(); e != nil {
+		return e.IsAttached()
+	}
+	return false
+}
+
+func (l *magiclink) DeliverNetworkPacket(protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
+	l.DumpPacket(DirectionRecv, protocol, pkt)
+	if _, d := l.get(); d != nil {
+		d.DeliverNetworkPacket(protocol, pkt)
+		return
+	}
+	log.E("netstack: magic: deliver network packet (sz: %d); no dispatcher, packet? %t", pkt != nil)
+	// TODO? release packet buffer when no dispatcher is available. The endpoint's dispatch
+	// TODO? increments the refcount before calling this method, expecting us to release it.
+	// if pkt != nil { pkt.DecRef() }
+}
+
+// unused
+func (l *magiclink) DeliverLinkPacket(protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
+	l.DumpPacket(DirectionRecv, protocol, pkt)
+	if _, d := l.get(); d != nil {
+		d.DeliverLinkPacket(protocol, pkt)
+		return
+	}
+	log.E("netstack: magic: deliver link packet (sz: %d); no dispatcher, packet? %t", pkt != nil)
+	// TODO? release packet buffer when no dispatcher is available
+	// if pkt != nil {	pkt.DecRef() }
+}
+
+func (l *magiclink) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Error) {
+	if l.doPCAP() {
+		for _, pkt := range pkts.AsSlice() {
+			if pkt != nil { // nilaway
+				l.DumpPacket(DirectionSend, pkt.NetworkProtocolNumber, pkt)
+			}
+		}
+	}
+	if e, _ := l.get(); e != nil {
+		return e.WritePackets(pkts)
+	}
+	log.E("netstack: magic: write packets; no endpoint")
+	return 0, &tcpip.ErrNotPermitted{}
+}
+
+func (l *magiclink) Wait() {
+	if e, d := l.get(); e != nil {
+		if e.IsAttached() {
+			e.Wait() // may panic in case of WaitGroup reuse issues
+		} else {
+			log.W("netstack: magic: wait; dispatcher not attached; has dispatcher? %t", d != nil)
+		}
+	}
+}
+
+func (l *magiclink) ARPHardwareType() header.ARPHardwareType {
+	if e, _ := l.get(); e != nil {
+		return e.ARPHardwareType()
+	}
+	return 0
+}
+
+func (l *magiclink) AddHeader(pkt *stack.PacketBuffer) {
+	if e, _ := l.get(); e != nil {
+		e.AddHeader(pkt)
+	}
+}
+
+func (l *magiclink) ParseHeader(pkt *stack.PacketBuffer) bool {
+	if e, _ := l.get(); e != nil {
+		return e.ParseHeader(pkt)
+	}
+	return false
+}
+
+func (l *magiclink) Close() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if e, _ := l.get(); e != nil {
+		e.Close()
+	}
+}
+
+func (l *magiclink) SetOnCloseAction(f func()) {
+	if e, _ := l.get(); e != nil {
+		e.SetOnCloseAction(f)
+	}
+}
+
+func (l *magiclink) GSOMaxSize() uint32 { return 0 }
+
+// SupportedGSO returns the supported segmentation offloading.
+func (l *magiclink) SupportedGSO() stack.SupportedGSO { return stack.GSONotSupported }

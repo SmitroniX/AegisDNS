@@ -1,0 +1,36 @@
+jdk:
+  - openjdk17
+env:
+  PACK: "aar"
+  FOUT: "firestack.aar"
+  FSRC: "firestack-sources.jar"
+  NDKVER: "30.0.16248370"
+  SDKVER: "37"
+before_install:
+# docs.jitpack.io/building
+  - sdk install java 17.0.20-tem
+  - sdk use java 17.0.20-tem
+# developer.android.com/tools/releases/platform-tools
+  - set -e
+  - yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
+# gomobile: failed to find android SDK platform: open /opt/android-sdk-linux/platforms: no such file or directory
+# developer.android.com/tools/sdkmanager
+# default sdk is at 35
+  - $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-${SDKVER}.0"
+  - $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;${SDKVER}.0.0"
+# default ndk is at v27; also: github.com/jitpack/jitpack.io/issues/4638
+# developer.android.com/ndk/downloads
+# github.com/android/ndk-samples/wiki/Configure-NDK-Path#the-sdkmanager-command-line-tool
+# github.com/AgregoreWeb/gomobile-android-docker/blob/3720e727fa/Dockerfile
+  - $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;${NDKVER}"
+  - ./make-aar
+install:
+  - ./mvn-install
+
+# cmds: jitpack.io/docs/BUILDING/#custom-commands
+# envs: jitpack.io/docs/BUILDING/#environment-variables
+# bout: github.com/celzero/outline-go-tun2socks/blob/88be3c35/Makefile#L13
+# tool: developer.android.com/studio/releases/build-tools
+# sdkm: developer.android.com/studio/command-line/sdkmanager
+# ndkm: developer.android.com/ndk/downloads
+# inst: github.com/wordpress-mobile/AztecEditor-Android/blob/5d983f8/jitpack.yml
