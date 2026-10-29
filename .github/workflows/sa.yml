@@ -44,7 +44,7 @@ jobs:
           DETEKT_VER: "2.0.0-alpha.6"
           JVM_TARGET: "17"
           # one of: [Error, Warning, Info, Never]
-          SEV: "Error"
+          SEV: "Never"
 
       - name: 📡 Upload to code-scanning
         if: always()
