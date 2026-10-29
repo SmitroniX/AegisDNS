@@ -15,6 +15,43 @@ from .dns_packet import DNSPacket, RecordType, RCode
 from .blocklist import BlocklistManager
 
 
+DEFAULT_UPSTREAM_UDP = "94.140.15.15:53"
+DEFAULT_UPSTREAM_DOH = "https://dns.adguard-dns.com/dns-query"
+
+DNS_PRESETS: Dict[str, dict] = {
+    "adguard": {
+        "name": "AdGuard DNS (Default Ad-Blocking)",
+        "udp": "94.140.15.15:53",
+        "doh": "https://dns.adguard-dns.com/dns-query",
+        "description": "Blocks ads, telemetry, trackers, and skips JioHotstar episode video ads",
+    },
+    "adguard-secondary": {
+        "name": "AdGuard DNS (Secondary)",
+        "udp": "94.140.14.14:53",
+        "doh": "https://dns.adguard-dns.com/dns-query",
+        "description": "AdGuard secondary ad-blocking resolver",
+    },
+    "cloudflare": {
+        "name": "Cloudflare DNS",
+        "udp": "1.1.1.1:53",
+        "doh": "https://cloudflare-dns.com/dns-query",
+        "description": "Fast & private standard DNS resolver",
+    },
+    "quad9": {
+        "name": "Quad9 Secure",
+        "udp": "9.9.9.9:53",
+        "doh": "https://dns.quad9.net/dns-query",
+        "description": "Blocks malware, spyware, and phishing domains",
+    },
+    "google": {
+        "name": "Google Public DNS",
+        "udp": "8.8.8.8:53",
+        "doh": "https://dns.google/dns-query",
+        "description": "Google Anycast DNS",
+    },
+}
+
+
 class CacheEntry:
     def __init__(self, packet: DNSPacket, expires_at: float):
         self.packet = packet
@@ -28,15 +65,20 @@ class DNSResolver:
     def __init__(
         self,
         blocklist: Optional[BlocklistManager] = None,
-        upstream_udp: str = "1.1.1.1:53",
-        upstream_doh: Optional[str] = "https://cloudflare-dns.com/dns-query",
+        upstream_udp: str = DEFAULT_UPSTREAM_UDP,
+        upstream_doh: Optional[str] = DEFAULT_UPSTREAM_DOH,
+        preset: Optional[str] = None,
         use_doh: bool = False,
         cache_enabled: bool = True,
         on_query_logged: Optional[Callable[[dict], None]] = None,
     ):
         self.blocklist = blocklist or BlocklistManager()
-        self.upstream_udp = upstream_udp
-        self.upstream_doh = upstream_doh
+        if preset and preset in DNS_PRESETS:
+            self.upstream_udp = DNS_PRESETS[preset]["udp"]
+            self.upstream_doh = DNS_PRESETS[preset]["doh"]
+        else:
+            self.upstream_udp = upstream_udp
+            self.upstream_doh = upstream_doh
         self.use_doh = use_doh
         self.cache_enabled = cache_enabled
         self.cache: Dict[Tuple[str, int], CacheEntry] = {}

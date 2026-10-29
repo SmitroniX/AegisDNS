@@ -11,7 +11,7 @@ import time
 from typing import Optional, Dict, List, Tuple
 from .dns_packet import DNSPacket, RecordType, RCode
 from .blocklist import BlocklistManager
-from .resolver import DNSResolver
+from .resolver import DNSResolver, DEFAULT_UPSTREAM_UDP, DEFAULT_UPSTREAM_DOH, DNS_PRESETS
 from .firewall import FirewallManager, FirewallRule, FirewallAction
 from .connection_tracker import ConnectionTracker, ConnectionFlow
 from .wireguard import WireGuardConfig
@@ -21,8 +21,9 @@ from .proxy import ProxyManager
 class AegisService:
     def __init__(
         self,
-        upstream_dns: str = "1.1.1.1:53",
-        upstream_doh: str = "https://cloudflare-dns.com/dns-query",
+        upstream_dns: str = DEFAULT_UPSTREAM_UDP,
+        upstream_doh: str = DEFAULT_UPSTREAM_DOH,
+        preset: Optional[str] = None,
         use_doh: bool = False,
         default_firewall_action: str = FirewallAction.ALLOW,
     ):
@@ -38,6 +39,7 @@ class AegisService:
             blocklist=self.blocklist,
             upstream_udp=upstream_dns,
             upstream_doh=upstream_doh,
+            preset=preset,
             use_doh=use_doh,
             on_query_logged=self._on_query_logged,
         )

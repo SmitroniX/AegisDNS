@@ -124,6 +124,23 @@ class TestDNSResolver(unittest.IsolatedAsyncioTestCase):
         h4, p4 = self.resolver._parse_upstream_addr("2606:4700:4700::1111")
         self.assertEqual((h4, p4), ("2606:4700:4700::1111", 53))
 
+    def test_default_upstream_is_adguard(self):
+        from aegis.resolver import DEFAULT_UPSTREAM_UDP, DNS_PRESETS
+        default_res = DNSResolver()
+        self.assertEqual(default_res.upstream_udp, DEFAULT_UPSTREAM_UDP)
+        self.assertEqual(default_res.upstream_udp, "94.140.15.15:53")
+        self.assertIn("adguard", DNS_PRESETS)
+        self.assertEqual(DNS_PRESETS["adguard"]["udp"], "94.140.15.15:53")
+
+    def test_preset_selection(self):
+        cf_res = DNSResolver(preset="cloudflare")
+        self.assertEqual(cf_res.upstream_udp, "1.1.1.1:53")
+        self.assertEqual(cf_res.upstream_doh, "https://cloudflare-dns.com/dns-query")
+
+        adguard_res = DNSResolver(preset="adguard")
+        self.assertEqual(adguard_res.upstream_udp, "94.140.15.15:53")
+        self.assertEqual(adguard_res.upstream_doh, "https://dns.adguard-dns.com/dns-query")
+
 
 if __name__ == "__main__":
     unittest.main()

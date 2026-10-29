@@ -13,7 +13,7 @@ from .service import AegisService
 from .api import AegisApiServer
 from .wireguard import WireGuardConfig
 from .dns_packet import DNSPacket, DNSQuestion, RecordType
-from .firewall import FirewallRule
+from .resolver import DNS_PRESETS, DEFAULT_UPSTREAM_UDP
 
 
 def main():
@@ -26,8 +26,12 @@ def main():
     p_start.add_argument("--dns-port", type=int, default=5353, help="DNS listen port")
     p_start.add_argument("--api-host", default="127.0.0.1", help="API listen host")
     p_start.add_argument("--api-port", type=int, default=8053, help="API listen port")
-    p_start.add_argument("--upstream", default="1.1.1.1:53", help="Upstream DNS (host:port)")
+    p_start.add_argument("--preset", choices=list(DNS_PRESETS.keys()), default="adguard", help="DNS upstream preset (default: adguard - ad/tracker blocking)")
+    p_start.add_argument("--upstream", default=None, help=f"Custom upstream DNS (host:port). Defaults to selected preset")
     p_start.add_argument("--blocklist", help="Path to initial blocklist / hosts file")
+
+    # List DNS presets
+    p_presets = subparsers.add_parser("list-presets", help="List built-in DNS upstream presets")
 
     # Resolve query
     p_resolve = subparsers.add_parser("resolve", help="Resolve a domain name")
@@ -45,14 +49,30 @@ def main():
 
     if args.command == "start":
         asyncio.run(_run_server(args))
+    elif args.command == "list-presets":
+        _run_list_presets()
     elif args.command == "resolve":
         asyncio.run(_run_resolve(args))
     elif args.command == "wireguard-check":
         _run_wg_check(args)
 
 
+def _run_list_presets():
+    print("\n=== AegisDNS Upstream Presets ===")
+    for key, p in DNS_PRESETS.items():
+        print(f"\n  • Preset: {key}")
+        print(f"    Name:        {p['name']}")
+        print(f"    UDP:         {p['udp']}")
+        print(f"    DoH:         {p['doh']}")
+        print(f"    Description: {p['description']}")
+    print()
+
+
 async def _run_server(args):
-    service = AegisService(upstream_dns=args.upstream)
+    if args.upstream:
+        service = AegisService(upstream_dns=args.upstream)
+    else:
+        service = AegisService(preset=args.preset)
     if args.blocklist and os.path.exists(args.blocklist):
         with open(args.blocklist, "r") as f:
             count = service.blocklist.load_from_text(f.read())
