@@ -1,12 +1,7 @@
 name: Build IzzyOnDroid
 
 on:
-  push:
-    tags:
-      - 'v*' # Run when a tag beginning with v is pushed.
-
-  # Allow the workflow to be started manually
-  # workflow_dispatch:
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -15,7 +10,6 @@ jobs:
   build:
     name: IzzyOnDroid
     runs-on: ubuntu-latest
-    if: ${{ secrets.IZZYONDROID_KS_ASC != '' }}
 
     env:
       IZZY_BUILD_VARIANT: "assembleFdroidFullRelease"

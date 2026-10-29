@@ -1,9 +1,7 @@
 name: 🧮 Monthly alpha
 
 on:
-  workflow_dispatch: # to be able to run it manually
-  schedule:
-    - cron: '53 21 27 * *' # on 27 every month
+  workflow_dispatch: # manual trigger only
 
 jobs:
   evaluateChanges:
@@ -21,7 +19,7 @@ jobs:
     name: 📆 Monthlies
     runs-on: ubuntu-latest
     needs: evaluateChanges
-    if: needs.evaluateChanges.outputs.SHOULD_BUILD == 'true' && secrets.ALPHA_KS_ASC != ''
+    if: needs.evaluateChanges.outputs.SHOULD_BUILD == 'true'
     env:
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
