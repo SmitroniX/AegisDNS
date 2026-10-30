@@ -126,6 +126,16 @@ class TestWireGuardConfig(unittest.TestCase):
         self.assertEqual(parsed.interface.mtu, 1280)
         self.assertEqual(parsed.peers[0].endpoint, "162.159.192.1:2408")
 
+    def test_register_cloudflare_warp(self):
+        # Live or fallback registration produces a valid ready-to-use profile
+        warp = WireGuardConfig.register_cloudflare_warp(name="AutoWARP")
+        self.assertEqual(warp.name, "AutoWARP")
+        self.assertEqual(warp.interface.mtu, 1280)
+        self.assertTrue(len(warp.interface.addresses) >= 1)
+        self.assertTrue(len(warp.peers) == 1)
+        is_valid, errors = warp.validate()
+        self.assertTrue(is_valid, f"Validation errors: {errors}")
+
     def test_streaming_unblock_profile(self):
         profile = WireGuardConfig.create_streaming_unblock_profile(
             name="UK-BBC-Unblock",

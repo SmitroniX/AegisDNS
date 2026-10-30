@@ -1803,6 +1803,13 @@
     <string name="new_warp_config_desc" translatable="true">Fetch WARP configuration from server</string>
     <string name="new_warp_error_toast" translatable="true">Unable to fetch WARP configuration</string>
     <string name="new_warp_invalid_config_toast" translatable="true">Invalid WARP configuration</string>
+    <string name="wg_quick_setup_warp_btn" translatable="true">⚡ 1-Click Setup: Cloudflare WARP</string>
+    <string name="wg_quick_setup_warp_desc" translatable="true">Instantly configure a free, fast Anycast WireGuard tunnel with zero setup</string>
+    <string name="wg_configuring_warp" translatable="true">Setting up Cloudflare WARP WireGuard...</string>
+    <string name="wg_warp_configured_success" translatable="true">Cloudflare WARP configured! Switch toggle to activate</string>
+    <string name="wg_add_tunnel_dialog_title" translatable="true">Add WireGuard Tunnel</string>
+    <string name="wg_add_tunnel_option_warp" translatable="true">⚡ 1-Click Cloudflare WARP (Free Anycast)</string>
+    <string name="wg_add_tunnel_option_manual" translatable="true">✏️ Manual Configuration</string>
 
     <string name="one_wg_apps_added" translatable="true">Routing all apps</string>
 

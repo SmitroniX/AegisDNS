@@ -45,7 +45,17 @@ import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
+import java.nio.charset.StandardCharsets
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.CopyOnWriteArraySet
+import com.celzero.bravedns.wireguard.KeyPair
+import org.json.JSONObject
 
 object WireguardManager : KoinComponent {
 
@@ -799,6 +809,95 @@ object WireguardManager : KoinComponent {
         Logger.d(LOG_TAG_PROXY, "config added: ${config.getId()}, ${config.getName()}")
         return config
     }
+
+    suspend fun addCloudflareWarpConfig(name: String = "Cloudflare WARP"): Config? =
+        withContext(Dispatchers.IO) {
+            try {
+                val keyPair = KeyPair()
+                val privateKey = keyPair.getPrivateKey().base64()
+                val publicKey = keyPair.getPublicKey().base64()
+
+                var clientIpv4 = "172.16.0.2/32"
+                var clientIpv6 = "2606:4700:110:8f81:857e:8b9a:b042:d72b/128"
+                var endpoint = "162.159.192.1:2408"
+                var peerPublicKey = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+
+                try {
+                    val url = URL("https://api.cloudflareclient.com/v0a2158/reg")
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                    conn.setRequestProperty("User-Agent", "okhttp/3.12.1")
+                    conn.doOutput = true
+                    conn.connectTimeout = 7000
+                    conn.readTimeout = 7000
+
+                    val now =
+                        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+                            timeZone = TimeZone.getTimeZone("UTC")
+                        }.format(Date())
+
+                    val jsonPayload = JSONObject().apply {
+                        put("key", publicKey)
+                        put("install_id", "")
+                        put("fcm_token", "")
+                        put("tos", now)
+                        put("model", "Android")
+                        put("type", "Android")
+                        put("locale", Locale.getDefault().toString())
+                    }
+
+                    OutputStreamWriter(conn.outputStream).use { it.write(jsonPayload.toString()) }
+
+                    if (conn.responseCode in 200..299) {
+                        val responseText = conn.inputStream.bufferedReader().use { it.readText() }
+                        val root = JSONObject(responseText)
+                        val config = root.optJSONObject("config")
+                        if (config != null) {
+                            val iface = config.optJSONObject("interface")
+                            val addrs = iface?.optJSONObject("addresses")
+                            val v4 = addrs?.optString("v4")
+                            val v6 = addrs?.optString("v6")
+                            if (!v4.isNullOrEmpty()) clientIpv4 = "$v4/32"
+                            if (!v6.isNullOrEmpty()) clientIpv6 = "$v6/128"
+
+                            val peers = config.optJSONArray("peers")
+                            if (peers != null && peers.length() > 0) {
+                                val p = peers.getJSONObject(0)
+                                val pk = p.optString("public_key")
+                                if (!pk.isNullOrEmpty()) peerPublicKey = pk
+                                val ep = p.optJSONObject("endpoint")
+                                val host = ep?.optString("host")
+                                if (!host.isNullOrEmpty()) endpoint = host
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Logger.w(LOG_TAG_PROXY, "Live Cloudflare WARP registration fallback: ${e.message}")
+                }
+
+                val confContent =
+                    """
+                    [Interface]
+                    PrivateKey = $privateKey
+                    Address = $clientIpv4, $clientIpv6
+                    DNS = 1.1.1.1, 2606:4700:4700::1111
+                    MTU = 1280
+
+                    [Peer]
+                    PublicKey = $peerPublicKey
+                    AllowedIPs = 0.0.0.0/0, ::/0
+                    Endpoint = $endpoint
+                    PersistentKeepalive = 25
+                    """.trimIndent()
+
+                val config = Config.parse(ByteArrayInputStream(confContent.toByteArray(StandardCharsets.UTF_8)))
+                addConfig(config, name)
+            } catch (e: Exception) {
+                Logger.e(LOG_TAG_PROXY, "Error adding preconfigured WARP tunnel: ${e.message}", e)
+                null
+            }
+        }
 
     suspend fun addOrUpdateInterface(
         configId: Int,

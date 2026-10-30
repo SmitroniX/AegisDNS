@@ -366,7 +366,8 @@ class WgMainActivity :
                 Utilities.showToastUiCentered(this, getString(R.string.blocklist_update_check_failure), Toast.LENGTH_SHORT)
             }
         }
-        b.createFab.setOnClickListener { openTunnelEditorActivity() }
+        b.wgQuickWarpBtn.setOnClickListener { setupPreconfiguredWarp() }
+        b.createFab.setOnClickListener { showCreateTunnelChooser() }
         b.deleteAllFab.setOnClickListener { showDeleteAllInterfacesDialog() }
 
         b.wgGeneralToggleBtn.setOnClickListener {
@@ -427,6 +428,52 @@ class WgMainActivity :
     private fun openTunnelEditorActivity() {
         val intent = Intent(this, WgConfigEditorActivity::class.java)
         startActivity(intent)
+    }
+
+    private fun showCreateTunnelChooser() {
+        val options =
+            arrayOf(
+                getString(R.string.wg_add_tunnel_option_warp),
+                getString(R.string.wg_add_tunnel_option_manual)
+            )
+        MaterialAlertDialogBuilder(this, R.style.App_Dialog_NoDim)
+            .setTitle(getString(R.string.wg_add_tunnel_dialog_title))
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> setupPreconfiguredWarp()
+                    1 -> openTunnelEditorActivity()
+                }
+            }
+            .setNegativeButton(getString(R.string.lbl_cancel), null)
+            .show()
+    }
+
+    private fun setupPreconfiguredWarp() {
+        Utilities.showToastUiCentered(
+            this,
+            getString(R.string.wg_configuring_warp),
+            Toast.LENGTH_SHORT
+        )
+        lifecycleScope.launch {
+            val cfg = WireguardManager.addCloudflareWarpConfig()
+            withContext(Dispatchers.Main) {
+                if (isFinishing || isDestroyed) return@withContext
+                if (cfg != null) {
+                    Utilities.showToastUiCentered(
+                        this@WgMainActivity,
+                        getString(R.string.wg_warp_configured_success),
+                        Toast.LENGTH_LONG
+                    )
+                    logEvent("Wireguard import", "preconfigured warp added")
+                } else {
+                    Utilities.showToastUiCentered(
+                        this@WgMainActivity,
+                        getString(R.string.new_warp_error_toast),
+                        Toast.LENGTH_SHORT
+                    )
+                }
+            }
+        }
     }
 
     private fun showDisableDialog(isOneWgToggle: Boolean) {
