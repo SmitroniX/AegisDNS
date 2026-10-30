@@ -1786,7 +1786,7 @@ func (t *dnsgateway) registerLocked(q, tid, uid, fid string, algip4, algip6 neti
 	ttl = max(ttl8s, ttl)
 	// ttl is used for algans and xips alike: both carry min upstream
 	// answer's ttl, so translations last as long as the original answer.
-	algttl := max(ttl2m, ttl)
+	algttl := ttl
 	ansttl := now.Add(algttl)
 	xipsttl := now.Add(ttl)
 	// secres.ips may be empty on timeout errors, or

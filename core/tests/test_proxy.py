@@ -61,6 +61,44 @@ class TestProxyManager(unittest.TestCase):
         self.assertEqual(req_dom[4], len("example.com"))
         self.assertEqual(req_dom[5:5 + len("example.com")], b"example.com")
 
+    def test_app_proxy_split_tunneling(self):
+        p_default = ProxyEndpoint(name="default_proxy", port=1080, is_default=True)
+        p_warp = ProxyEndpoint(name="warp_proxy", port=1081)
+
+        self.pm.add_proxy(p_default)
+        self.pm.add_proxy(p_warp)
+
+        # Non-mapped app falls back to default proxy
+        self.assertEqual(self.pm.route_target(app_id="org.mozilla.firefox").name, "default_proxy")
+
+        # Map Netflix package to warp
+        self.pm.set_app_proxy("com.netflix.ninja", "warp_proxy")
+        self.assertEqual(self.pm.route_target(app_id="com.netflix.ninja").name, "warp_proxy")
+
+        # App mapping takes precedence over domain mapping
+        self.pm.set_domain_proxy("netflix.com", "default_proxy")
+        self.assertEqual(
+            self.pm.route_target(domain="netflix.com", app_id="com.netflix.ninja").name,
+            "warp_proxy",
+        )
+
+        # Remove app mapping reverts to default
+        self.pm.remove_app_proxy("com.netflix.ninja")
+        self.assertEqual(self.pm.route_target(app_id="com.netflix.ninja").name, "default_proxy")
+
+    def test_apply_streaming_preset(self):
+        p_uk = ProxyEndpoint(name="uk_proxy", port=1082)
+        self.pm.add_proxy(p_uk)
+
+        # Apply BBC iPlayer preset
+        packages = self.pm.apply_streaming_preset("bbc_iplayer", "uk_proxy")
+        self.assertIn("bbc.iplayer.android", packages)
+        self.assertEqual(self.pm.route_target(app_id="bbc.iplayer.android").name, "uk_proxy")
+
+        # Invalid preset raises ValueError
+        with self.assertRaises(ValueError):
+            self.pm.apply_streaming_preset("unknown_app_xyz", "uk_proxy")
+
 
 if __name__ == "__main__":
     unittest.main()

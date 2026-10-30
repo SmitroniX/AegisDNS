@@ -87,6 +87,8 @@
     <string name="lbl_include" translatable="true">Include</string>
     <string name="lbl_select_all" translatable="true">select all</string>
     <string name="lbl_unselect_all" translatable="true">unselect all</string>
+    <string name="lbl_streaming_apps" translatable="true">Streaming apps</string>
+    <string name="streaming_apps_selected_toast" translatable="true">Routed streaming apps (Netflix, Prime, Hotstar) through proxy</string>
     <string name="lbl_active" translatable="true">Active</string>
     <string name="lbl_inactive" translatable="true">Inactive</string>
     <string name="lbl_checking" translatable="false">Checking…</string>

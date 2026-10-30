@@ -248,3 +248,63 @@ class WireGuardConfig:
                 out.append(f"PersistentKeepalive = {peer.persistent_keepalive}")
 
         return "\n".join(out)
+
+    @classmethod
+    def create_cloudflare_warp_config(
+        cls,
+        private_key: Optional[str] = None,
+        client_ipv4: str = "172.16.0.2/32",
+        client_ipv6: str = "2606:4700:110:8f81:857e:8b9a:b042:d72b/128",
+        endpoint: str = "162.159.192.1:2408",
+        persistent_keepalive: int = 25,
+        name: str = "Cloudflare-WARP",
+    ) -> WireGuardConfig:
+        """Factory method to generate a ready-to-use Cloudflare WARP WireGuard profile."""
+        import secrets
+
+        if not private_key:
+            private_key = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+
+        # Standard Cloudflare WARP gateway public key
+        warp_public_key = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+
+        iface = WireGuardInterface(
+            private_key=private_key,
+            addresses=[client_ipv4, client_ipv6],
+            dns_servers=["1.1.1.1", "2606:4700:4700::1111"],
+            mtu=1280,
+        )
+        peer = WireGuardPeer(
+            public_key=warp_public_key,
+            endpoint=endpoint,
+            allowed_ips=["0.0.0.0/0", "::/0"],
+            persistent_keepalive=persistent_keepalive,
+        )
+        return cls(name=name, interface=iface, peers=[peer])
+
+    @classmethod
+    def create_streaming_unblock_profile(
+        cls,
+        name: str,
+        private_key: str,
+        peer_public_key: str,
+        endpoint: str,
+        client_address: str = "10.0.0.2/32",
+        allowed_ips: Optional[List[str]] = None,
+        dns_servers: Optional[List[str]] = None,
+        persistent_keepalive: int = 25,
+    ) -> WireGuardConfig:
+        """Creates a streaming geo-unblock WireGuard tunnel profile."""
+        iface = WireGuardInterface(
+            private_key=private_key,
+            addresses=[client_address],
+            dns_servers=dns_servers or ["1.1.1.1", "94.140.15.15"],
+            mtu=1420,
+        )
+        peer = WireGuardPeer(
+            public_key=peer_public_key,
+            endpoint=endpoint,
+            allowed_ips=allowed_ips or ["0.0.0.0/0", "::/0"],
+            persistent_keepalive=persistent_keepalive,
+        )
+        return cls(name=name, interface=iface, peers=[peer])

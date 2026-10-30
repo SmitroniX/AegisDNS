@@ -141,6 +141,67 @@ class TestDNSResolver(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(adguard_res.upstream_udp, "94.140.15.15:53")
         self.assertEqual(adguard_res.upstream_doh, "https://dns.adguard-dns.com/dns-query")
 
+    async def test_domain_split_dns_routing_exact(self):
+        # Route hotstar.com directly to AdGuard to skip ads
+        self.resolver.add_split_rule("hotstar.com", upstream_udp="94.140.15.15:53", description="AdGuard for Hotstar")
+
+        mock_resp = DNSPacket()
+        mock_resp.add_a_record("hotstar.com", "13.235.12.34", ttl=300)
+        self.resolver._query_udp = AsyncMock(return_value=mock_resp)
+
+        query = DNSPacket()
+        query.questions.append(DNSQuestion(qname="hotstar.com", qtype=RecordType.A))
+        resp = await self.resolver.resolve(query)
+
+        self.assertEqual(resp.answers[0].rdata_str, "13.235.12.34")
+        self.resolver._query_udp.assert_awaited_with(query, "94.140.15.15:53")
+        self.assertEqual(self.query_logs[-1]["upstream"], "SPLIT_DNS:94.140.15.15:53")
+        self.assertEqual(self.resolver.stats["split_queries"], 1)
+
+    async def test_domain_split_dns_routing_wildcard(self):
+        # Route *.hotstar.com to AdGuard
+        self.resolver.add_split_rule("*.hotstar.com", upstream_udp="94.140.15.15:53")
+
+        mock_resp_split = DNSPacket()
+        mock_resp_split.add_a_record("api.hotstar.com", "13.235.12.35", ttl=300)
+
+        mock_resp_def = DNSPacket()
+        mock_resp_def.add_a_record("google.com", "142.250.190.46", ttl=300)
+
+        async def mock_query(pkt, addr):
+            if "hotstar" in pkt.questions[0].name:
+                return mock_resp_split
+            return mock_resp_def
+
+        self.resolver._query_udp = AsyncMock(side_effect=mock_query)
+
+        # 1. Subdomain of hotstar.com matches split rule
+        q1 = DNSPacket()
+        q1.questions.append(DNSQuestion(qname="api.hotstar.com", qtype=RecordType.A))
+        await self.resolver.resolve(q1)
+        self.assertEqual(self.query_logs[-1]["upstream"], "SPLIT_DNS:94.140.15.15:53")
+
+        # 2. General domain uses default upstream
+        q2 = DNSPacket()
+        q2.questions.append(DNSQuestion(qname="google.com", qtype=RecordType.A))
+        await self.resolver.resolve(q2)
+        self.assertEqual(self.query_logs[-1]["upstream"], "1.1.1.1:53")
+
+    async def test_streaming_split_dns_presets_load(self):
+        count = self.resolver.load_streaming_split_presets(["hotstar", "netflix", "bbc_iplayer"])
+        self.assertGreater(count, 0)
+        self.assertIsNotNone(self.resolver.get_split_rule("api.hotstar.com"))
+        self.assertIsNotNone(self.resolver.get_split_rule("video.netflix.com"))
+        self.assertIsNotNone(self.resolver.get_split_rule("tv.bbc.co.uk"))
+
+    async def test_remove_split_rule(self):
+        self.resolver.add_split_rule("custom.streaming.tv", upstream_udp="8.8.4.4:53")
+        self.assertIsNotNone(self.resolver.get_split_rule("custom.streaming.tv"))
+
+        removed = self.resolver.remove_split_rule("custom.streaming.tv")
+        self.assertTrue(removed)
+        self.assertIsNone(self.resolver.get_split_rule("custom.streaming.tv"))
+
 
 if __name__ == "__main__":
     unittest.main()

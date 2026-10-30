@@ -523,4 +523,51 @@ object ProxyManager : KoinComponent {
             db.deleteMapping(uid, packageName, proxyId)
         }
     }
+
+    val STREAMING_APP_PACKAGES = setOf(
+        "com.netflix.mediaclient",
+        "com.netflix.ninja",
+        "com.amazon.avod.thirdpartyclient",
+        "com.amazon.amazonvideo.livingroom",
+        "in.startv.hotstar",
+        "in.startv.hotstar.dplus",
+        "com.disney.disneyplus",
+        "bbc.iplayer.android",
+        "com.hulu.plus",
+        "com.hbo.hbonow",
+        "com.wbd.stream",
+        "com.crunchyroll.crunchyroid",
+        "com.google.android.youtube",
+        "com.google.android.youtube.tv",
+        "com.spotify.music"
+    )
+
+    fun isStreamingApp(packageName: String): Boolean {
+        return STREAMING_APP_PACKAGES.contains(packageName.lowercase())
+    }
+
+    suspend fun setProxyIdForStreamingApps(proxyId: String, proxyName: String) {
+        if (!isValidProxyPrefix(proxyId)) {
+            Logger.e(LOG_TAG_PROXY, "Invalid proxy id: $proxyId")
+            return
+        }
+        pamMutex.withLock {
+            val toAdd = FirewallManager.getAllApps()
+            toAdd.forEach { app ->
+                if (!isStreamingApp(app.packageName)) return@forEach
+                val ai = FirewallManager.getAppInfoByUidAndPackage(app.uid, app.packageName)
+                    ?: return@forEach
+                if (ai.tombstoneTs > 0L) return@forEach
+                ensureBaseRow(app.uid, app.packageName, ai.appName)
+                val tuple = ProxyAppMapTuple(app.uid, app.packageName, proxyId)
+                if (!pamSet.contains(tuple)) {
+                    pamSet.add(tuple)
+                    val pam =
+                        ProxyApplicationMapping(app.uid, app.packageName, ai.appName, proxyName, true, proxyId)
+                    db.insert(pam)
+                }
+            }
+        }
+        Logger.i(LOG_TAG_PROXY, "added proxy $proxyId to streaming apps")
+    }
 }

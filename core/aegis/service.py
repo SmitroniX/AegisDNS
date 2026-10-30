@@ -162,6 +162,8 @@ class AegisService:
                 "blocked_queries": blocked_q,
                 "cached_queries": res_stats["cached_queries"],
                 "upstream_queries": res_stats["upstream_queries"],
+                "split_queries": res_stats.get("split_queries", 0),
+                "split_rules_count": len(self.resolver.split_rules),
                 "block_rate_percent": block_pct,
                 "rules_loaded": self.blocklist.stats["rules_loaded"],
                 "top_blocked_domains": sorted(top_blocked.items(), key=lambda x: x[1], reverse=True)[:5],

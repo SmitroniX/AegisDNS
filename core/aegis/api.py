@@ -11,6 +11,9 @@ from typing import Optional
 from .service import AegisService
 from .dns_packet import DNSPacket, DNSQuestion, RecordType
 from .firewall import FirewallRule
+from .proxy import STREAMING_APP_PRESETS
+from .resolver import STREAMING_SPLIT_DNS_PRESETS
+from .wireguard import WireGuardConfig
 
 
 class AegisApiServer:
@@ -190,6 +193,94 @@ class AegisApiServer:
                 "rcode": resp.header.rcode,
                 "answers": answers,
                 "blocked": any(a["data"] == "0.0.0.0" for a in answers),
+            }
+
+        # --- Domain-Based Split-DNS Routing Endpoints ---
+        elif method == "GET" and path == "/rules/split-dns":
+            rules = self.service.resolver.list_split_rules()
+            return 200, {"count": len(rules), "rules": rules}
+
+        elif method == "POST" and path == "/rules/split-dns":
+            data = json.loads(body.decode("utf-8")) if body else {}
+            domain = data.get("domain")
+            if not domain:
+                return 400, {"error": "Missing 'domain' in request payload"}
+            rule = self.service.resolver.add_split_rule(
+                domain_pattern=domain,
+                upstream_udp=data.get("upstream_udp"),
+                upstream_doh=data.get("upstream_doh"),
+                preset=data.get("preset"),
+                description=data.get("description", ""),
+            )
+            return 201, {"status": "created", "rule": rule.to_dict()}
+
+        elif method == "DELETE" and path.startswith("/rules/split-dns/"):
+            domain = path[len("/rules/split-dns/") :]
+            ok = self.service.resolver.remove_split_rule(domain)
+            if ok:
+                return 200, {"status": "deleted", "domain": domain}
+            return 404, {"error": "Split DNS rule not found", "domain": domain}
+
+        elif method == "POST" and path == "/rules/split-dns/presets":
+            data = json.loads(body.decode("utf-8")) if body else {}
+            service_names = data.get("services")
+            loaded = self.service.resolver.load_streaming_split_presets(service_names)
+            return 200, {"status": "loaded", "presets_loaded": loaded}
+
+        # --- Streaming Geo-Unblocking & Per-App Split-Tunneling Endpoints ---
+        elif method == "GET" and path == "/streaming/presets":
+            return 200, {
+                "streaming_app_presets": STREAMING_APP_PRESETS,
+                "streaming_split_dns_presets": STREAMING_SPLIT_DNS_PRESETS,
+                "current_app_proxies": self.service.proxies.list_app_proxies(),
+            }
+
+        elif method == "POST" and path == "/streaming/apply-preset":
+            data = json.loads(body.decode("utf-8")) if body else {}
+            service = data.get("service")
+            proxy_name = data.get("proxy_name")
+            if not service or not proxy_name:
+                return 400, {"error": "Missing 'service' or 'proxy_name'"}
+            try:
+                packages = self.service.proxies.apply_streaming_preset(service, proxy_name)
+                # Also auto-load matching split-DNS if available
+                if service in STREAMING_SPLIT_DNS_PRESETS:
+                    self.service.resolver.load_streaming_split_presets([service])
+                return 200, {
+                    "status": "applied",
+                    "service": service,
+                    "proxy_name": proxy_name,
+                    "configured_packages": packages,
+                }
+            except ValueError as e:
+                return 400, {"error": str(e)}
+
+        elif method == "GET" and path == "/rules/split-tunnel":
+            return 200, {"app_proxies": self.service.proxies.list_app_proxies()}
+
+        elif method == "POST" and path == "/rules/split-tunnel":
+            data = json.loads(body.decode("utf-8")) if body else {}
+            app_id = data.get("app_id")
+            proxy_name = data.get("proxy_name")
+            if not app_id or not proxy_name:
+                return 400, {"error": "Missing 'app_id' or 'proxy_name'"}
+            self.service.proxies.set_app_proxy(app_id, proxy_name)
+            return 201, {"status": "created", "app_id": app_id, "proxy_name": proxy_name}
+
+        elif method == "DELETE" and path.startswith("/rules/split-tunnel/"):
+            app_id = path[len("/rules/split-tunnel/") :]
+            ok = self.service.proxies.remove_app_proxy(app_id)
+            if ok:
+                return 200, {"status": "deleted", "app_id": app_id}
+            return 404, {"error": "App proxy rule not found", "app_id": app_id}
+
+        elif method == "GET" and path == "/wireguard/warp-preset":
+            warp_cfg = WireGuardConfig.create_cloudflare_warp_config()
+            return 200, {
+                "name": warp_cfg.name,
+                "ini_config": warp_cfg.to_ini_string(),
+                "addresses": warp_cfg.interface.addresses,
+                "endpoint": warp_cfg.peers[0].endpoint if warp_cfg.peers else None,
             }
 
         return 404, {"error": f"Path '{path}' not found"}

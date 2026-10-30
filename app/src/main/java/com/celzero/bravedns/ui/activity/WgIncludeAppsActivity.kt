@@ -246,6 +246,27 @@ class WgIncludeAppsActivity : BaseActivity(R.layout.dialog_wg_apps),
             confirmBulkAction(include = false)
         }
 
+        b.wgIncludeAppStreamingCheck.setOnClickListener {
+            if (bulkOpInProgress) return@setOnClickListener
+            bulkOpInProgress = true
+            b.wgIncludeAppStreamingCheck.isEnabled = false
+            io {
+                ProxyManager.setProxyIdForStreamingApps(proxyId, proxyName)
+                withContext(Dispatchers.Main) {
+                    bulkOpInProgress = false
+                    b.wgIncludeAppStreamingCheck.isEnabled = true
+                    b.wgIncludeAppStreamingCheck.isChecked = true
+                    refreshPagingAdapter()
+                    syncBulkToggleState()
+                    Utilities.showToastUiCentered(
+                        this@WgIncludeAppsActivity,
+                        getString(R.string.streaming_apps_selected_toast),
+                        Toast.LENGTH_SHORT
+                    )
+                }
+            }
+        }
+
         b.wgRefreshList.setOnClickListener {
             b.wgRefreshList.isEnabled = false
             b.wgRefreshList.animation = animation

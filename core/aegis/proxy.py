@@ -108,10 +108,67 @@ class SOCKS5Client:
         return bytes(out)
 
 
+STREAMING_APP_PRESETS: Dict[str, dict] = {
+    "netflix": {
+        "name": "Netflix",
+        "packages": ["com.netflix.ninja", "com.netflix.mediaclient"],
+        "description": "Netflix mobile and Android TV clients",
+        "recommended_unblock": "warp",
+    },
+    "prime_video": {
+        "name": "Prime Video",
+        "packages": [
+            "com.amazon.amazonvideo.livingroom",
+            "com.amazon.avod.thirdpartyclient",
+            "com.amazon.mp3",
+        ],
+        "description": "Amazon Prime Video streaming apps",
+        "recommended_unblock": "wireguard",
+    },
+    "bbc_iplayer": {
+        "name": "BBC iPlayer",
+        "packages": ["bbc.iplayer.android"],
+        "description": "BBC iPlayer UK television and media",
+        "recommended_unblock": "wireguard_uk",
+    },
+    "hotstar": {
+        "name": "Disney+ Hotstar",
+        "packages": ["in.startv.hotstar", "com.disney.disneyplus", "com.hotstar.tv"],
+        "description": "Hotstar sports and Disney+ streaming apps",
+        "recommended_unblock": "adguard_split",
+    },
+    "hulu": {
+        "name": "Hulu",
+        "packages": ["com.hulu.plus", "com.hulu.livingroomplus"],
+        "description": "Hulu streaming and live TV",
+        "recommended_unblock": "wireguard",
+    },
+    "hbo_max": {
+        "name": "Max / HBO Max",
+        "packages": ["com.wbd.stream", "com.hbo.hbonow"],
+        "description": "Warner Bros Discovery Max streaming app",
+        "recommended_unblock": "wireguard",
+    },
+    "peacock": {
+        "name": "Peacock TV",
+        "packages": ["com.peacocktv.peacockandroid"],
+        "description": "NBCUniversal Peacock streaming app",
+        "recommended_unblock": "wireguard",
+    },
+    "youtube": {
+        "name": "YouTube / YouTube TV",
+        "packages": ["com.google.android.youtube", "com.google.android.youtube.tv"],
+        "description": "YouTube & YouTube TV client applications",
+        "recommended_unblock": "direct",
+    },
+}
+
+
 class ProxyManager:
     def __init__(self):
         self.proxies: Dict[str, ProxyEndpoint] = {}
         self.domain_proxy_map: Dict[str, str] = {}  # domain -> proxy_name
+        self.app_proxy_map: Dict[str, str] = {}     # app_id/package -> proxy_name
 
     def add_proxy(self, proxy: ProxyEndpoint) -> Tuple[bool, Optional[str]]:
         ok, err = proxy.validate()
@@ -138,12 +195,50 @@ class ProxyManager:
     def set_domain_proxy(self, domain: str, proxy_name: str):
         self.domain_proxy_map[domain.rstrip(".").lower()] = proxy_name
 
-    def route_target(self, domain: Optional[str] = None) -> Optional[ProxyEndpoint]:
+    def set_app_proxy(self, app_id: str, proxy_name: str):
+        """Maps an application ID or package name to a designated proxy/tunnel."""
+        self.app_proxy_map[app_id.strip()] = proxy_name
+
+    def remove_app_proxy(self, app_id: str) -> bool:
+        return bool(self.app_proxy_map.pop(app_id.strip(), None))
+
+    def get_app_proxy(self, app_id: str) -> Optional[ProxyEndpoint]:
+        pname = self.app_proxy_map.get(app_id.strip())
+        if pname and pname in self.proxies:
+            return self.proxies[pname]
+        return None
+
+    def list_app_proxies(self) -> Dict[str, str]:
+        return dict(self.app_proxy_map)
+
+    def apply_streaming_preset(self, service_name: str, proxy_name: str) -> List[str]:
+        """Applies streaming unblock split-tunneling preset by binding all associated packages."""
+        norm_service = service_name.strip().lower()
+        if norm_service not in STREAMING_APP_PRESETS:
+            raise ValueError(f"Unknown streaming service preset: {service_name}")
+
+        packages = STREAMING_APP_PRESETS[norm_service]["packages"]
+        for pkg in packages:
+            self.set_app_proxy(pkg, proxy_name)
+        return packages
+
+    def route_target(
+        self, domain: Optional[str] = None, app_id: Optional[str] = None
+    ) -> Optional[ProxyEndpoint]:
+        # 1. Per-app split-tunneling has highest routing precedence
+        if app_id:
+            proxy = self.get_app_proxy(app_id)
+            if proxy:
+                return proxy
+
+        # 2. Domain-based proxy routing
         if domain:
             norm = domain.rstrip(".").lower()
             proxy_name = self.domain_proxy_map.get(norm)
             if proxy_name and proxy_name in self.proxies:
                 return self.proxies[proxy_name]
+
+        # 3. Default proxy fallback
         return self.get_default_proxy()
 
     def list_proxies(self) -> List[dict]:

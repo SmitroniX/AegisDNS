@@ -84,6 +84,70 @@ class TestAegisApiServer(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status_del, 200)
         self.assertEqual(del_data["status"], "deleted")
 
+    async def test_split_dns_endpoints(self):
+        # 1. Create split rule
+        payload = {
+            "domain": "hotstar.com",
+            "upstream_udp": "94.140.15.15:53",
+            "description": "AdGuard for Hotstar",
+        }
+        status, data = await asyncio.to_thread(self._http_post, "/rules/split-dns", payload)
+        self.assertEqual(status, 201)
+        self.assertEqual(data["rule"]["domain"], "hotstar.com")
+
+        # 2. List split rules
+        status_list, list_data = await asyncio.to_thread(self._http_get, "/rules/split-dns")
+        self.assertEqual(status_list, 200)
+        self.assertTrue(any(r["domain"] == "hotstar.com" for r in list_data["rules"]))
+
+        # 3. Load streaming split presets
+        status_pre, data_pre = await asyncio.to_thread(self._http_post, "/rules/split-dns/presets", {"services": ["hotstar", "netflix"]})
+        self.assertEqual(status_pre, 200)
+        self.assertGreater(data_pre["presets_loaded"], 0)
+
+        # 4. Delete split rule
+        status_del, del_data = await asyncio.to_thread(self._http_delete, "/rules/split-dns/hotstar.com")
+        self.assertEqual(status_del, 200)
+        self.assertEqual(del_data["status"], "deleted")
+
+    async def test_streaming_presets_and_apply(self):
+        # 1. Get presets
+        status, data = await asyncio.to_thread(self._http_get, "/streaming/presets")
+        self.assertEqual(status, 200)
+        self.assertIn("streaming_app_presets", data)
+        self.assertIn("netflix", data["streaming_app_presets"])
+
+        # 2. Add a proxy first so we can route to it
+        from aegis.proxy import ProxyEndpoint
+        self.service.proxies.add_proxy(ProxyEndpoint(name="warp_proxy", port=1080))
+
+        # 3. Apply streaming preset
+        status_apply, data_apply = await asyncio.to_thread(
+            self._http_post,
+            "/streaming/apply-preset",
+            {"service": "netflix", "proxy_name": "warp_proxy"},
+        )
+        self.assertEqual(status_apply, 200)
+        self.assertIn("com.netflix.ninja", data_apply["configured_packages"])
+
+        # 4. Per-app split tunnel CRUD
+        status_st, data_st = await asyncio.to_thread(
+            self._http_post,
+            "/rules/split-tunnel",
+            {"app_id": "com.custom.app", "proxy_name": "warp_proxy"},
+        )
+        self.assertEqual(status_st, 201)
+
+        status_del_st, _ = await asyncio.to_thread(self._http_delete, "/rules/split-tunnel/com.custom.app")
+        self.assertEqual(status_del_st, 200)
+
+    async def test_warp_preset_endpoint(self):
+        status, data = await asyncio.to_thread(self._http_get, "/wireguard/warp-preset")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["name"], "Cloudflare-WARP")
+        self.assertIn("[Interface]", data["ini_config"])
+        self.assertIn("162.159.192.1:2408", data["endpoint"])
+
 
 if __name__ == "__main__":
     unittest.main()

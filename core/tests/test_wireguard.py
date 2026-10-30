@@ -103,11 +103,39 @@ class TestWireGuardConfig(unittest.TestCase):
             allowed_ips=["0.0.0.0/0"],
         )
         cfg = WireGuardConfig(name="roundtrip", interface=iface, peers=[peer])
-
         ini_text = cfg.to_ini_string()
         cfg2 = WireGuardConfig.from_ini_string(ini_text, name="roundtrip")
         self.assertEqual(cfg2.interface.mtu, 1280)
         self.assertEqual(cfg2.peers[0].endpoint, "1.2.3.4:51820")
+
+    def test_cloudflare_warp_config_creation(self):
+        warp = WireGuardConfig.create_cloudflare_warp_config()
+        self.assertEqual(warp.name, "Cloudflare-WARP")
+        self.assertEqual(warp.interface.mtu, 1280)
+        self.assertEqual(warp.interface.addresses, ["172.16.0.2/32", "2606:4700:110:8f81:857e:8b9a:b042:d72b/128"])
+        self.assertEqual(warp.peers[0].endpoint, "162.159.192.1:2408")
+        self.assertEqual(warp.peers[0].allowed_ips, ["0.0.0.0/0", "::/0"])
+
+        is_valid, errors = warp.validate()
+        self.assertTrue(is_valid)
+        self.assertEqual(len(errors), 0)
+
+        # Roundtrip to INI string and parse back
+        ini_str = warp.to_ini_string()
+        parsed = WireGuardConfig.from_ini_string(ini_str)
+        self.assertEqual(parsed.interface.mtu, 1280)
+        self.assertEqual(parsed.peers[0].endpoint, "162.159.192.1:2408")
+
+    def test_streaming_unblock_profile(self):
+        profile = WireGuardConfig.create_streaming_unblock_profile(
+            name="UK-BBC-Unblock",
+            private_key="YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=",
+            peer_public_key="YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI=",
+            endpoint="198.51.100.50:51820",
+        )
+        self.assertEqual(profile.name, "UK-BBC-Unblock")
+        self.assertEqual(profile.interface.mtu, 1420)
+        self.assertTrue(profile.validate()[0])
 
 
 if __name__ == "__main__":

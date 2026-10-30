@@ -47,9 +47,13 @@ import android.transition.TransitionManager
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
+import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.LinearLayout
@@ -178,6 +182,9 @@ class HomeScreenFragment : Fragment(R.layout.fragment_home_screen) {
     // is stopped to draw attention to the call-to-action. Cleared in
     // onPause() and onDestroyView().
     private var rotationAnimator: ValueAnimator? = null
+
+    // Breathing pulse animator on the status bar and text when VPN is actively running
+    private var statusPulseAnimator: ValueAnimator? = null
 
     // Active-state presentation captured once per view (in px / drawable)
     // before any state-dependent styling runs, so low-emphasis inactive
@@ -422,6 +429,9 @@ class HomeScreenFragment : Fragment(R.layout.fragment_home_screen) {
         observeVpnState()
         //observeSponsorState()
         scheduleTourIfNeeded()
+        setupButtonTouchFeedback()
+        setupCardTouchFeedback()
+        animateCardsEntry()
     }
 
     private fun initializeValues() {
@@ -671,6 +681,11 @@ class HomeScreenFragment : Fragment(R.layout.fragment_home_screen) {
             handleRethinkAppStatus()
             handleShimmer()
             startTrafficStats()
+            if (isVpnActivated) {
+                startStatusPulseAnimation()
+            } else {
+                stopStatusPulseAnimation()
+            }
         }
 
         VpnController.connectionStatus.observe(viewLifecycleOwner) {
@@ -715,6 +730,7 @@ class HomeScreenFragment : Fragment(R.layout.fragment_home_screen) {
                 ColorStateList.valueOf(UIUtils.fetchColor(ctx, R.attr.background))
             btn.setTextColor(UIUtils.fetchColor(ctx, R.attr.primaryTextColor))
             stopBorderAnimation()
+            startStatusPulseAnimation()
         } else {
             // Stopped: accent-filled, high-visibility call-to-action
             btn.text = getString(R.string.hsf_start_btn_state).uppercase()
@@ -725,6 +741,7 @@ class HomeScreenFragment : Fragment(R.layout.fragment_home_screen) {
                 ColorStateList.valueOf(UIUtils.fetchColor(ctx, R.attr.accentGood))
             btn.setTextColor(UIUtils.fetchColor(ctx, R.attr.invertedPrimaryTextColor))
             startBorderAnimation()
+            stopStatusPulseAnimation()
         }
     }
 
@@ -799,6 +816,96 @@ class HomeScreenFragment : Fragment(R.layout.fragment_home_screen) {
         rotationAnimator?.cancel()
         rotationAnimator = null
         b.fhsAnimatedBorderView.isVisible = false
+    }
+
+    private fun startStatusPulseAnimation() {
+        stopStatusPulseAnimation()
+        if (!isVpnActivated || view == null || !isAdded) return
+        statusPulseAnimator = ValueAnimator.ofFloat(1.0f, 0.65f, 1.0f).apply {
+            duration = 2400L
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.RESTART
+            interpolator = AccelerateDecelerateInterpolator()
+            addUpdateListener { animator ->
+                val alphaVal = animator.animatedValue as Float
+                b.fhsProtectionLevelTxt.alpha = alphaVal
+                b.fhsActiveSinceTxt.alpha = alphaVal * 0.7f
+            }
+            start()
+        }
+    }
+
+    private fun stopStatusPulseAnimation() {
+        statusPulseAnimator?.cancel()
+        statusPulseAnimator = null
+        if (view != null && isAdded) {
+            b.fhsProtectionLevelTxt.alpha = 1.0f
+            b.fhsActiveSinceTxt.alpha = 0.7f
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupButtonTouchFeedback() {
+        val btn = b.fhsDnsOnOffBtn
+        btn.setOnTouchListener { v, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.animate().scaleX(0.95f).scaleY(0.95f).setDuration(100).start()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(160)
+                        .setInterpolator(OvershootInterpolator(2.2f))
+                        .start()
+                }
+            }
+            false
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupCardTouchFeedback() {
+        val cards = listOf(
+            b.fhsCardDnsLl,
+            b.fhsCardAppsCv,
+            b.fhsCardProxyLl,
+            b.fhsCardLogsLl
+        )
+        cards.forEach { card ->
+            card.setOnTouchListener { v, event ->
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        v.animate().scaleX(0.98f).scaleY(0.98f).setDuration(110).start()
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(170)
+                            .setInterpolator(OvershootInterpolator(1.8f))
+                            .start()
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    private fun animateCardsEntry() {
+        val cards = listOf(
+            b.fhsProtectionBar,
+            b.fhsCardDnsLl,
+            b.fhsCardProxyLl,
+            b.fhsCardAppsCv,
+            b.fhsCardLogsLl
+        )
+        cards.forEachIndexed { index, card ->
+            card.alpha = 0f
+            card.translationY = 28f
+            card.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setDuration(320L)
+                .setStartDelay(index * 45L)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
+        }
     }
 
     private fun showDisabledCards() {
@@ -3125,6 +3232,7 @@ class HomeScreenFragment : Fragment(R.layout.fragment_home_screen) {
     override fun onPause() {
         super.onPause()
         stopBorderAnimation()
+        stopStatusPulseAnimation()
         stopShimmer()
         stopTrafficStats()
         proxyStateListenerJob?.cancel()
@@ -3135,6 +3243,7 @@ class HomeScreenFragment : Fragment(R.layout.fragment_home_screen) {
         super.onHiddenChanged(hidden)
         if (hidden) {
             stopBorderAnimation()
+            stopStatusPulseAnimation()
             stopTrafficStats()
         } else {
             updateMainButtonUi()
@@ -3149,6 +3258,7 @@ class HomeScreenFragment : Fragment(R.layout.fragment_home_screen) {
         proxyStatusLiveData = null
         dnsObserverActive = false
         stopBorderAnimation()
+        stopStatusPulseAnimation()
         lastGridSignature = null
         lastGridSignatureMode = null
         // ViewPager2 keeps a global reference to its callback; unregistering

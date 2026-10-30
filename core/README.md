@@ -68,3 +68,13 @@ aegis start --dns-port 5353 --api-port 8053 --blocklist /home/ubuntu/rethink-app
 - `POST http://127.0.0.1:8053/rules/lockdown`
 - `POST http://127.0.0.1:8053/blocklist/reload`
 - `POST http://127.0.0.1:8053/dns/resolve`
+- `GET http://127.0.0.1:8053/rules/split-dns`
+- `POST http://127.0.0.1:8053/rules/split-dns`
+- `DELETE http://127.0.0.1:8053/rules/split-dns/<domain>`
+- `POST http://127.0.0.1:8053/rules/split-dns/presets`
+- `GET http://127.0.0.1:8053/streaming/presets`
+- `POST http://127.0.0.1:8053/streaming/apply-preset`
+- `GET http://127.0.0.1:8053/rules/split-tunnel`
+- `POST http://127.0.0.1:8053/rules/split-tunnel`
+- `DELETE http://127.0.0.1:8053/rules/split-tunnel/<app_id>`
+- `GET http://127.0.0.1:8053/wireguard/warp-preset`
