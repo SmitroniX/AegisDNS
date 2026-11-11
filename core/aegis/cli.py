@@ -42,6 +42,14 @@ def main():
     p_wg = subparsers.add_parser("wireguard-check", help="Validate a WireGuard .conf file")
     p_wg.add_argument("file", help="Path to .conf file")
 
+    # List VPN Locations
+    subparsers.add_parser("list-locations", help="List available Location-Wise VPN presets")
+
+    # Generate Location VPN profile
+    p_loc = subparsers.add_parser("create-location-vpn", help="Generate a WireGuard .conf for a country location")
+    p_loc.add_argument("country", help="Country code (e.g. US, GB, DE, JP, IN, SG)")
+    p_loc.add_argument("-o", "--output", help="Output file path (prints to stdout if omitted)")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -55,6 +63,10 @@ def main():
         asyncio.run(_run_resolve(args))
     elif args.command == "wireguard-check":
         _run_wg_check(args)
+    elif args.command == "list-locations":
+        _run_list_locations()
+    elif args.command == "create-location-vpn":
+        _run_create_location_vpn(args)
 
 
 def _run_list_presets():
@@ -133,6 +145,31 @@ def _run_wg_check(args):
             sys.exit(1)
     except Exception as e:
         print(f"[-] Parse error: {e}")
+        sys.exit(1)
+
+
+def _run_list_locations():
+    locations = WireGuardConfig.get_available_locations()
+    print(f"\n=== AegisDNS Location-Wise VPN Presets ({len(locations)} available) ===")
+    for loc in locations:
+        print(f"  {loc['flag']} [{loc['code']}] {loc['name']} - {loc['city']}")
+        print(f"     Endpoint: {loc['endpoint']} | DNS: {', '.join(loc['dns'])}")
+    print()
+
+
+def _run_create_location_vpn(args):
+    try:
+        cfg = WireGuardConfig.create_location_profile(args.country)
+        ini_text = cfg.to_ini_string()
+        if args.output:
+            with open(args.output, "w") as f:
+                f.write(ini_text)
+            print(f"[+] Wrote location WireGuard profile for {args.country.upper()} to {args.output}")
+        else:
+            print(f"\n# WireGuard Profile: {cfg.name}\n")
+            print(ini_text)
+    except ValueError as e:
+        print(f"[-] Error: {e}")
         sys.exit(1)
 
 

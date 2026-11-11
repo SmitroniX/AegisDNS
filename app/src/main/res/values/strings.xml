@@ -1809,7 +1809,13 @@
     <string name="wg_warp_configured_success" translatable="true">Cloudflare WARP configured! Switch toggle to activate</string>
     <string name="wg_add_tunnel_dialog_title" translatable="true">Add WireGuard Tunnel</string>
     <string name="wg_add_tunnel_option_warp" translatable="true">⚡ 1-Click Cloudflare WARP (Free Anycast)</string>
+    <string name="wg_add_tunnel_option_location" translatable="true">🌍 Location-Wise VPN (Country Presets)</string>
     <string name="wg_add_tunnel_option_manual" translatable="true">✏️ Manual Configuration</string>
+    <string name="wg_location_vpn_btn" translatable="true">🌍 Location-Wise VPN</string>
+    <string name="wg_location_vpn_desc" translatable="true">Choose a specific country or region for your VPN connection</string>
+    <string name="wg_location_vpn_dialog_title" translatable="true">Select VPN Location</string>
+    <string name="wg_configuring_location_vpn" translatable="true">Setting up VPN for %1$s...</string>
+    <string name="wg_location_vpn_configured_success" translatable="true">%1$s VPN configured! Switch toggle to activate</string>
 
     <string name="one_wg_apps_added" translatable="true">Routing all apps</string>
 
@@ -2716,8 +2722,8 @@
     <string name="rpn_desc_four" translatable="true">Multi-hop • Double encryption</string>
 
     <!-- ProxySettingsActivity RPN section -->
-    <string name="proxy_rpn_heading" translatable="false">Aegis Proxy Network</string>
-    <string name="proxy_rpn_desc_inactive" translatable="false">Subscribe to route traffic through Aegis servers</string>
+    <string name="proxy_rpn_heading" translatable="false">Location-Wise VPN (Country Proxy)</string>
+    <string name="proxy_rpn_desc_inactive" translatable="false">Route traffic through specific global country locations</string>
 
     <!-- ServerWgConfigDetailActivity live stats card -->
     <string name="lbl_last_handshake" translatable="false">Last Handshake</string>

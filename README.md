@@ -25,6 +25,7 @@ AegisDNS is a fast, privacy-respecting network engine and personal firewall. It 
 - **Global Lockdown**: Instant one-click kill-switch mode to cut all outbound non-loopback connections.
 
 ### 🌐 WireGuard & SOCKS5 Routing
+- **Location-Wise VPN & 1-Click WARP**: 1-click Cloudflare WARP and multi-region Location-Wise VPN presets (United States, United Kingdom, Germany, Japan, Singapore, Canada, Netherlands, India, France, Australia, Switzerland, Brazil) with automated Curve25519 keypair generation.
 - **WireGuard Configuration**: Full INI parser supporting multi-directive addresses, DNS servers, `AllowedIPs`, and bracketed IPv6 endpoints (`[2606:4700::1]:51820`).
 - **SOCKS5 Proxying**: Multi-format proxy connections supporting IPv4 (`0x01`), Domain (`0x03`), and raw 16-byte IPv6 (`0x04`) address types.
 
@@ -74,6 +75,16 @@ aegis resolve doubleclick.net --blocklist core/data/default_blocklist.txt
 Verify a WireGuard configuration file:
 ```bash
 aegis wireguard-check /path/to/wg0.conf
+```
+
+List available location-wise VPN presets:
+```bash
+aegis list-locations
+```
+
+Generate a WireGuard location profile (e.g., Japan):
+```bash
+aegis create-location-vpn JP -o wg-jp.conf
 ```
 
 Start the DNS server and management REST API:

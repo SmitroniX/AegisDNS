@@ -22,9 +22,13 @@ class TestAegisApiServer(unittest.IsolatedAsyncioTestCase):
     def _http_get(self, path: str):
         url = f"http://127.0.0.1:{self.api_port}{path}"
         req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=2.0) as resp:
-            data = resp.read().decode("utf-8")
-            return resp.status, json.loads(data)
+        try:
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                data = resp.read().decode("utf-8")
+                return resp.status, json.loads(data)
+        except urllib.error.HTTPError as e:
+            data = e.read().decode("utf-8")
+            return e.code, json.loads(data)
 
     def _http_post(self, path: str, payload: dict):
         url = f"http://127.0.0.1:{self.api_port}{path}"
@@ -147,6 +151,24 @@ class TestAegisApiServer(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["name"], "Cloudflare-WARP")
         self.assertIn("[Interface]", data["ini_config"])
         self.assertIn("162.159.192.1:2408", data["endpoint"])
+
+    async def test_wireguard_locations_endpoint(self):
+        status, data = await asyncio.to_thread(self._http_get, "/wireguard/locations")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(data["count"], 10)
+        self.assertTrue(any(l["code"] == "JP" for l in data["locations"]))
+
+    async def test_wireguard_location_preset_endpoint(self):
+        status, data = await asyncio.to_thread(self._http_get, "/wireguard/location-preset?country=DE")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["country"], "DE")
+        self.assertIn("162.159.192.3:2408", data["endpoint"])
+        self.assertIn("[Interface]", data["ini_config"])
+
+        # Test invalid country
+        status_err, data_err = await asyncio.to_thread(self._http_get, "/wireguard/location-preset?country=UNKNOWN")
+        self.assertEqual(status_err, 400)
+        self.assertIn("error", data_err)
 
 
 if __name__ == "__main__":

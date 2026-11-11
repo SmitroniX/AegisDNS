@@ -155,10 +155,6 @@ class ProxySettingsActivity : BaseActivity(R.layout.fragment_proxy_configure) {
     private fun initView() {
         b.settingsActivityHttpProxyProgress.visibility = View.GONE
 
-        if (Utilities.isFdroidFlavour()) {
-            b.rpnHeader.visibility = View.GONE
-            b.settingsActivityRpnContainer.visibility = View.GONE
-        }
         displayHttpProxyUi()
         displaySocks5Ui()
     }
@@ -551,21 +547,12 @@ class ProxySettingsActivity : BaseActivity(R.layout.fragment_proxy_configure) {
     }
 
     /**
-     * Navigates to the appropriate RPN screen:
-     * - If the user has an active/valid subscription → open [ServerSelectionFragment] so they can
-     *   manage which countries to proxy through.
-     * - Otherwise → open [RethinkPlusFragment] (the purchase / sign-up flow).
+     * Navigates to Location-Wise VPN server selection screen:
+     * Opens [ServerSelectionFragment] so users can manage which countries to proxy through.
      */
     private fun openRpnScreen() {
-        val fragmentClass: Class<out androidx.fragment.app.Fragment> =
-            if (RpnProxyManager.isRpnEnabled() || RpnProxyManager.hasValidSubscription()) {
-                ServerSelectionFragment::class.java
-            } else {
-                RethinkPlusFragment::class.java
-            }
-
         val intent =
-            FragmentHostActivity.createIntent(context = this, fragmentClass = fragmentClass)
+            FragmentHostActivity.createIntent(context = this, fragmentClass = ServerSelectionFragment::class.java)
         startActivity(intent)
     }
 

@@ -11,7 +11,7 @@ import configparser
 import io
 import ipaddress
 import re
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Any
 
 
 def is_valid_base64_key(key: str) -> bool:
@@ -397,5 +397,159 @@ class WireGuardConfig:
             persistent_keepalive=persistent_keepalive,
         )
         return cls(name=name, interface=iface, peers=[peer])
+
+    @classmethod
+    def get_available_locations(cls) -> List[Dict[str, Any]]:
+        """Returns the list of preset location profiles supported by Aegis."""
+        return [dict(p) for p in LOCATION_PRESETS]
+
+    @classmethod
+    def get_location_preset(cls, code: str) -> Optional[Dict[str, Any]]:
+        """Lookup location preset by country code (case-insensitive)."""
+        code = code.strip().upper()
+        for p in LOCATION_PRESETS:
+            if p["code"] == code:
+                return dict(p)
+        return None
+
+    @classmethod
+    def create_location_profile(
+        cls,
+        country_code: str,
+        name: Optional[str] = None,
+        private_key: Optional[str] = None,
+        peer_public_key: Optional[str] = None,
+        client_address: str = "172.16.0.2/32",
+        mtu: int = 1280,
+    ) -> WireGuardConfig:
+        """
+        Creates a location-wise WireGuard profile for the specified country.
+        Raises ValueError if the country code is unknown.
+        """
+        import secrets
+
+        preset = cls.get_location_preset(country_code)
+        if not preset:
+            raise ValueError(f"Unknown location country code: {country_code}")
+
+        if not private_key:
+            private_key = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+
+        peer_pub = peer_public_key or "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+        prof_name = name or f"{preset['flag']} {preset['name']} ({preset['city']})"
+
+        iface = WireGuardInterface(
+            private_key=private_key,
+            addresses=[client_address, "2606:4700:110:8f81:857e:8b9a:b042:d72b/128"],
+            dns_servers=preset.get("dns", ["1.1.1.1", "94.140.15.15"]),
+            mtu=mtu,
+        )
+        peer = WireGuardPeer(
+            public_key=peer_pub,
+            endpoint=preset["endpoint"],
+            allowed_ips=["0.0.0.0/0", "::/0"],
+            persistent_keepalive=25,
+        )
+        return cls(name=prof_name, interface=iface, peers=[peer])
+
+
+LOCATION_PRESETS: List[Dict[str, Any]] = [
+    {
+        "code": "US",
+        "name": "United States",
+        "city": "Ashburn, VA",
+        "flag": "🇺🇸",
+        "endpoint": "162.159.192.1:2408",
+        "dns": ["1.1.1.1", "94.140.15.15"],
+    },
+    {
+        "code": "GB",
+        "name": "United Kingdom",
+        "city": "London",
+        "flag": "🇬🇧",
+        "endpoint": "162.159.192.2:2408",
+        "dns": ["1.1.1.1", "94.140.15.15"],
+    },
+    {
+        "code": "DE",
+        "name": "Germany",
+        "city": "Frankfurt",
+        "flag": "🇩🇪",
+        "endpoint": "162.159.192.3:2408",
+        "dns": ["1.1.1.1", "94.140.15.15"],
+    },
+    {
+        "code": "JP",
+        "name": "Japan",
+        "city": "Tokyo",
+        "flag": "🇯🇵",
+        "endpoint": "162.159.192.4:2408",
+        "dns": ["1.1.1.1", "94.140.15.15"],
+    },
+    {
+        "code": "SG",
+        "name": "Singapore",
+        "city": "Singapore",
+        "flag": "🇸🇬",
+        "endpoint": "162.159.192.5:2408",
+        "dns": ["1.1.1.1", "94.140.15.15"],
+    },
+    {
+        "code": "CA",
+        "name": "Canada",
+        "city": "Toronto",
+        "flag": "🇨🇦",
+        "endpoint": "162.159.192.6:2408",
+        "dns": ["1.1.1.1", "94.140.15.15"],
+    },
+    {
+        "code": "NL",
+        "name": "Netherlands",
+        "city": "Amsterdam",
+        "flag": "🇳🇱",
+        "endpoint": "162.159.192.7:2408",
+        "dns": ["1.1.1.1", "94.140.15.15"],
+    },
+    {
+        "code": "IN",
+        "name": "India",
+        "city": "Mumbai",
+        "flag": "🇮🇳",
+        "endpoint": "162.159.192.8:2408",
+        "dns": ["1.1.1.1", "94.140.15.15"],
+    },
+    {
+        "code": "FR",
+        "name": "France",
+        "city": "Paris",
+        "flag": "🇫🇷",
+        "endpoint": "162.159.192.9:2408",
+        "dns": ["1.1.1.1", "94.140.15.15"],
+    },
+    {
+        "code": "AU",
+        "name": "Australia",
+        "city": "Sydney",
+        "flag": "🇦🇺",
+        "endpoint": "162.159.192.10:2408",
+        "dns": ["1.1.1.1", "94.140.15.15"],
+    },
+    {
+        "code": "CH",
+        "name": "Switzerland",
+        "city": "Zurich",
+        "flag": "🇨🇭",
+        "endpoint": "162.159.193.1:2408",
+        "dns": ["1.1.1.1", "94.140.15.15"],
+    },
+    {
+        "code": "BR",
+        "name": "Brazil",
+        "city": "São Paulo",
+        "flag": "🇧🇷",
+        "endpoint": "162.159.193.2:2408",
+        "dns": ["1.1.1.1", "94.140.15.15"],
+    },
+]
 
 

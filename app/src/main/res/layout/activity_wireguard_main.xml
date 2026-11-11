@@ -42,7 +42,7 @@
             android:layout_height="wrap_content"
             android:layout_below="@id/wg_empty_image"
             android:layout_centerHorizontal="true"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="20dp"
             android:paddingStart="24dp"
             android:paddingTop="12dp"
             android:paddingEnd="24dp"
@@ -50,6 +50,24 @@
             android:text="@string/wg_quick_setup_warp_btn"
             android:textColor="?attr/homeScreenHeaderTextColor"
             app:backgroundTint="?attr/accentGood"
+            app:cornerRadius="24dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/wg_location_vpn_btn"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/wg_quick_warp_btn"
+            android:layout_centerHorizontal="true"
+            android:layout_marginTop="10dp"
+            android:paddingStart="24dp"
+            android:paddingTop="12dp"
+            android:paddingEnd="24dp"
+            android:paddingBottom="12dp"
+            android:text="@string/wg_location_vpn_btn"
+            android:textColor="?attr/primaryTextColor"
+            app:strokeColor="?attr/accentGood"
+            app:strokeWidth="1dp"
             app:cornerRadius="24dp" />
 
     </RelativeLayout>

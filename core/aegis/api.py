@@ -283,4 +283,22 @@ class AegisApiServer:
                 "endpoint": warp_cfg.peers[0].endpoint if warp_cfg.peers else None,
             }
 
+        elif method == "GET" and path == "/wireguard/locations":
+            locations = WireGuardConfig.get_available_locations()
+            return 200, {"count": len(locations), "locations": locations}
+
+        elif method == "GET" and path == "/wireguard/location-preset":
+            cc = query.get("country", query.get("cc", ["US"]))[0]
+            try:
+                cfg = WireGuardConfig.create_location_profile(cc)
+                return 200, {
+                    "name": cfg.name,
+                    "country": cc.upper(),
+                    "ini_config": cfg.to_ini_string(),
+                    "addresses": cfg.interface.addresses,
+                    "endpoint": cfg.peers[0].endpoint if cfg.peers else None,
+                }
+            except ValueError as e:
+                return 400, {"error": str(e)}
+
         return 404, {"error": f"Path '{path}' not found"}

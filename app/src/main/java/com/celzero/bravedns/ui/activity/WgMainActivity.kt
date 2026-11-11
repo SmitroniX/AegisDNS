@@ -367,6 +367,7 @@ class WgMainActivity :
             }
         }
         b.wgQuickWarpBtn.setOnClickListener { setupPreconfiguredWarp() }
+        b.wgLocationVpnBtn.setOnClickListener { showLocationVpnChooser() }
         b.createFab.setOnClickListener { showCreateTunnelChooser() }
         b.deleteAllFab.setOnClickListener { showDeleteAllInterfacesDialog() }
 
@@ -434,6 +435,7 @@ class WgMainActivity :
         val options =
             arrayOf(
                 getString(R.string.wg_add_tunnel_option_warp),
+                getString(R.string.wg_add_tunnel_option_location),
                 getString(R.string.wg_add_tunnel_option_manual)
             )
         MaterialAlertDialogBuilder(this, R.style.App_Dialog_NoDim)
@@ -441,11 +443,55 @@ class WgMainActivity :
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> setupPreconfiguredWarp()
-                    1 -> openTunnelEditorActivity()
+                    1 -> showLocationVpnChooser()
+                    2 -> openTunnelEditorActivity()
                 }
             }
             .setNegativeButton(getString(R.string.lbl_cancel), null)
             .show()
+    }
+
+    private fun showLocationVpnChooser() {
+        val presets = WireguardManager.LOCATION_PRESETS
+        val locationLabels = presets.map { "${it.flag}  ${it.name} (${it.city})" }.toTypedArray()
+
+        MaterialAlertDialogBuilder(this, R.style.App_Dialog_NoDim)
+            .setTitle(getString(R.string.wg_location_vpn_dialog_title))
+            .setItems(locationLabels) { _, which ->
+                if (which in presets.indices) {
+                    setupLocationVpn(presets[which])
+                }
+            }
+            .setNegativeButton(getString(R.string.lbl_cancel), null)
+            .show()
+    }
+
+    private fun setupLocationVpn(preset: WireguardManager.LocationVpnPreset) {
+        Utilities.showToastUiCentered(
+            this,
+            getString(R.string.wg_configuring_location_vpn, preset.name),
+            Toast.LENGTH_SHORT
+        )
+        lifecycleScope.launch {
+            val cfg = WireguardManager.addLocationVpnConfig(preset)
+            withContext(Dispatchers.Main) {
+                if (isFinishing || isDestroyed) return@withContext
+                if (cfg != null) {
+                    Utilities.showToastUiCentered(
+                        this@WgMainActivity,
+                        getString(R.string.wg_location_vpn_configured_success, "${preset.flag} ${preset.name}"),
+                        Toast.LENGTH_LONG
+                    )
+                    logEvent("Wireguard import", "location vpn added: ${preset.code}")
+                } else {
+                    Utilities.showToastUiCentered(
+                        this@WgMainActivity,
+                        getString(R.string.new_warp_error_toast),
+                        Toast.LENGTH_SHORT
+                    )
+                }
+            }
+        }
     }
 
     private fun setupPreconfiguredWarp() {

@@ -147,6 +147,57 @@ class TestWireGuardConfig(unittest.TestCase):
         self.assertEqual(profile.interface.mtu, 1420)
         self.assertTrue(profile.validate()[0])
 
+    def test_get_available_locations(self):
+        locations = WireGuardConfig.get_available_locations()
+        self.assertGreaterEqual(len(locations), 10)
+        codes = [loc["code"] for loc in locations]
+        self.assertIn("US", codes)
+        self.assertIn("GB", codes)
+        self.assertIn("DE", codes)
+        self.assertIn("JP", codes)
+        self.assertIn("SG", codes)
+        for loc in locations:
+            self.assertIn("code", loc)
+            self.assertIn("name", loc)
+            self.assertIn("city", loc)
+            self.assertIn("flag", loc)
+            self.assertIn("endpoint", loc)
+            self.assertIn("dns", loc)
+
+    def test_get_location_preset(self):
+        us = WireGuardConfig.get_location_preset("us")
+        self.assertIsNotNone(us)
+        self.assertEqual(us["name"], "United States")
+
+        jp = WireGuardConfig.get_location_preset("JP")
+        self.assertIsNotNone(jp)
+        self.assertEqual(jp["name"], "Japan")
+
+        invalid = WireGuardConfig.get_location_preset("ZZ")
+        self.assertIsNone(invalid)
+
+    def test_create_location_profile(self):
+        for code in ["US", "GB", "DE", "JP", "IN"]:
+            cfg = WireGuardConfig.create_location_profile(code)
+            self.assertTrue(cfg.name.startswith(WireGuardConfig.get_location_preset(code)["flag"]))
+            self.assertEqual(cfg.interface.mtu, 1280)
+            self.assertEqual(len(cfg.peers), 1)
+            self.assertEqual(cfg.peers[0].endpoint, WireGuardConfig.get_location_preset(code)["endpoint"])
+            is_valid, errors = cfg.validate()
+            self.assertTrue(is_valid, f"Validation errors for {code}: {errors}")
+
+    def test_create_location_profile_roundtrip(self):
+        cfg = WireGuardConfig.create_location_profile("JP")
+        ini_str = cfg.to_ini_string()
+        parsed = WireGuardConfig.from_ini_string(ini_str)
+        self.assertEqual(parsed.interface.mtu, 1280)
+        self.assertEqual(parsed.peers[0].endpoint, WireGuardConfig.get_location_preset("JP")["endpoint"])
+        self.assertTrue(parsed.validate()[0])
+
+    def test_create_location_profile_invalid(self):
+        with self.assertRaises(ValueError):
+            WireGuardConfig.create_location_profile("INVALID_CC")
+
 
 if __name__ == "__main__":
     unittest.main()

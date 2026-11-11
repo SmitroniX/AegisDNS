@@ -899,6 +899,117 @@ object WireguardManager : KoinComponent {
             }
         }
 
+    data class LocationVpnPreset(
+        val code: String,
+        val name: String,
+        val city: String,
+        val flag: String,
+        val endpoint: String,
+        val dns: String = "1.1.1.1, 94.140.15.15"
+    )
+
+    val LOCATION_PRESETS = listOf(
+        LocationVpnPreset("US", "United States", "Ashburn, VA", "🇺🇸", "162.159.192.1:2408"),
+        LocationVpnPreset("GB", "United Kingdom", "London", "🇬🇧", "162.159.192.2:2408"),
+        LocationVpnPreset("DE", "Germany", "Frankfurt", "🇩🇪", "162.159.192.3:2408"),
+        LocationVpnPreset("JP", "Japan", "Tokyo", "🇯🇵", "162.159.192.4:2408"),
+        LocationVpnPreset("SG", "Singapore", "Singapore", "🇸🇬", "162.159.192.5:2408"),
+        LocationVpnPreset("CA", "Canada", "Toronto", "🇨🇦", "162.159.192.6:2408"),
+        LocationVpnPreset("NL", "Netherlands", "Amsterdam", "🇳🇱", "162.159.192.7:2408"),
+        LocationVpnPreset("IN", "India", "Mumbai", "🇮🇳", "162.159.192.8:2408"),
+        LocationVpnPreset("FR", "France", "Paris", "🇫🇷", "162.159.192.9:2408"),
+        LocationVpnPreset("AU", "Australia", "Sydney", "🇦🇺", "162.159.192.10:2408"),
+        LocationVpnPreset("CH", "Switzerland", "Zurich", "🇨🇭", "162.159.193.1:2408"),
+        LocationVpnPreset("BR", "Brazil", "São Paulo", "🇧🇷", "162.159.193.2:2408")
+    )
+
+    suspend fun addLocationVpnConfig(preset: LocationVpnPreset): Config? =
+        withContext(Dispatchers.IO) {
+            try {
+                val keyPair = KeyPair()
+                val privateKey = keyPair.getPrivateKey().base64()
+                val publicKey = keyPair.getPublicKey().base64()
+
+                var clientIpv4 = "172.16.0.2/32"
+                var clientIpv6 = "2606:4700:110:8f81:857e:8b9a:b042:d72b/128"
+                var endpoint = preset.endpoint
+                var peerPublicKey = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+
+                try {
+                    val url = URL("https://api.cloudflareclient.com/v0a2158/reg")
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                    conn.setRequestProperty("User-Agent", "okhttp/3.12.1")
+                    conn.doOutput = true
+                    conn.connectTimeout = 7000
+                    conn.readTimeout = 7000
+
+                    val now =
+                        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+                            timeZone = TimeZone.getTimeZone("UTC")
+                        }.format(Date())
+
+                    val jsonPayload = JSONObject().apply {
+                        put("key", publicKey)
+                        put("install_id", "")
+                        put("fcm_token", "")
+                        put("tos", now)
+                        put("model", "Android")
+                        put("type", "Android")
+                        put("locale", Locale.getDefault().toString())
+                    }
+
+                    OutputStreamWriter(conn.outputStream).use { it.write(jsonPayload.toString()) }
+
+                    if (conn.responseCode in 200..299) {
+                        val responseText = conn.inputStream.bufferedReader().use { it.readText() }
+                        val root = JSONObject(responseText)
+                        val config = root.optJSONObject("config")
+                        if (config != null) {
+                            val iface = config.optJSONObject("interface")
+                            val addrs = iface?.optJSONObject("addresses")
+                            val v4 = addrs?.optString("v4")
+                            val v6 = addrs?.optString("v6")
+                            if (!v4.isNullOrEmpty()) clientIpv4 = "$v4/32"
+                            if (!v6.isNullOrEmpty()) clientIpv6 = "$v6/128"
+
+                            val peers = config.optJSONArray("peers")
+                            if (peers != null && peers.length() > 0) {
+                                val p = peers.getJSONObject(0)
+                                val pk = p.optString("public_key")
+                                if (!pk.isNullOrEmpty()) peerPublicKey = pk
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Logger.w(LOG_TAG_PROXY, "Live registration fallback for ${preset.code}: ${e.message}")
+                }
+
+                val confContent =
+                    """
+                    [Interface]
+                    PrivateKey = $privateKey
+                    Address = $clientIpv4, $clientIpv6
+                    DNS = ${preset.dns}
+                    MTU = 1280
+
+                    [Peer]
+                    PublicKey = $peerPublicKey
+                    AllowedIPs = 0.0.0.0/0, ::/0
+                    Endpoint = $endpoint
+                    PersistentKeepalive = 25
+                    """.trimIndent()
+
+                val config = Config.parse(ByteArrayInputStream(confContent.toByteArray(StandardCharsets.UTF_8)))
+                val tunnelName = "${preset.flag} ${preset.name} (${preset.city})"
+                addConfig(config, tunnelName)
+            } catch (e: Exception) {
+                Logger.e(LOG_TAG_PROXY, "Error adding Location VPN (${preset.code}): ${e.message}", e)
+                null
+            }
+        }
+
     suspend fun addOrUpdateInterface(
         configId: Int,
         configName: String,
