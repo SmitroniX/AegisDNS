@@ -162,7 +162,7 @@ class TestAegisApiServer(unittest.IsolatedAsyncioTestCase):
         status, data = await asyncio.to_thread(self._http_get, "/wireguard/location-preset?country=DE")
         self.assertEqual(status, 200)
         self.assertEqual(data["country"], "DE")
-        self.assertIn("162.159.192.3:2408", data["endpoint"])
+        self.assertIn("162.159.192.1:2408", data["endpoint"])
         self.assertIn("[Interface]", data["ini_config"])
 
         # Test invalid country

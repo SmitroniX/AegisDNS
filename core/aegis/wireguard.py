@@ -467,7 +467,7 @@ LOCATION_PRESETS: List[Dict[str, Any]] = [
         "name": "United Kingdom",
         "city": "London",
         "flag": "🇬🇧",
-        "endpoint": "162.159.192.2:2408",
+        "endpoint": "162.159.192.1:2408",
         "dns": ["1.1.1.1", "94.140.15.15"],
     },
     {
@@ -475,7 +475,7 @@ LOCATION_PRESETS: List[Dict[str, Any]] = [
         "name": "Germany",
         "city": "Frankfurt",
         "flag": "🇩🇪",
-        "endpoint": "162.159.192.3:2408",
+        "endpoint": "162.159.192.1:2408",
         "dns": ["1.1.1.1", "94.140.15.15"],
     },
     {
@@ -483,7 +483,7 @@ LOCATION_PRESETS: List[Dict[str, Any]] = [
         "name": "Japan",
         "city": "Tokyo",
         "flag": "🇯🇵",
-        "endpoint": "162.159.192.4:2408",
+        "endpoint": "162.159.192.1:2408",
         "dns": ["1.1.1.1", "94.140.15.15"],
     },
     {
@@ -491,7 +491,7 @@ LOCATION_PRESETS: List[Dict[str, Any]] = [
         "name": "Singapore",
         "city": "Singapore",
         "flag": "🇸🇬",
-        "endpoint": "162.159.192.5:2408",
+        "endpoint": "162.159.192.1:2408",
         "dns": ["1.1.1.1", "94.140.15.15"],
     },
     {
@@ -499,7 +499,7 @@ LOCATION_PRESETS: List[Dict[str, Any]] = [
         "name": "Canada",
         "city": "Toronto",
         "flag": "🇨🇦",
-        "endpoint": "162.159.192.6:2408",
+        "endpoint": "162.159.192.1:2408",
         "dns": ["1.1.1.1", "94.140.15.15"],
     },
     {
@@ -507,7 +507,7 @@ LOCATION_PRESETS: List[Dict[str, Any]] = [
         "name": "Netherlands",
         "city": "Amsterdam",
         "flag": "🇳🇱",
-        "endpoint": "162.159.192.7:2408",
+        "endpoint": "162.159.192.1:2408",
         "dns": ["1.1.1.1", "94.140.15.15"],
     },
     {
@@ -515,7 +515,7 @@ LOCATION_PRESETS: List[Dict[str, Any]] = [
         "name": "India",
         "city": "Mumbai",
         "flag": "🇮🇳",
-        "endpoint": "162.159.192.8:2408",
+        "endpoint": "162.159.192.1:2408",
         "dns": ["1.1.1.1", "94.140.15.15"],
     },
     {
@@ -523,7 +523,7 @@ LOCATION_PRESETS: List[Dict[str, Any]] = [
         "name": "France",
         "city": "Paris",
         "flag": "🇫🇷",
-        "endpoint": "162.159.192.9:2408",
+        "endpoint": "162.159.192.1:2408",
         "dns": ["1.1.1.1", "94.140.15.15"],
     },
     {
@@ -531,7 +531,7 @@ LOCATION_PRESETS: List[Dict[str, Any]] = [
         "name": "Australia",
         "city": "Sydney",
         "flag": "🇦🇺",
-        "endpoint": "162.159.192.10:2408",
+        "endpoint": "162.159.192.1:2408",
         "dns": ["1.1.1.1", "94.140.15.15"],
     },
     {
@@ -539,7 +539,7 @@ LOCATION_PRESETS: List[Dict[str, Any]] = [
         "name": "Switzerland",
         "city": "Zurich",
         "flag": "🇨🇭",
-        "endpoint": "162.159.193.1:2408",
+        "endpoint": "162.159.192.1:2408",
         "dns": ["1.1.1.1", "94.140.15.15"],
     },
     {
@@ -547,7 +547,7 @@ LOCATION_PRESETS: List[Dict[str, Any]] = [
         "name": "Brazil",
         "city": "São Paulo",
         "flag": "🇧🇷",
-        "endpoint": "162.159.193.2:2408",
+        "endpoint": "162.159.192.1:2408",
         "dns": ["1.1.1.1", "94.140.15.15"],
     },
 ]

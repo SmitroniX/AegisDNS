@@ -547,12 +547,12 @@ class ProxySettingsActivity : BaseActivity(R.layout.fragment_proxy_configure) {
     }
 
     /**
-     * Navigates to Location-Wise VPN server selection screen:
-     * Opens [ServerSelectionFragment] so users can manage which countries to proxy through.
+     * Navigates to Location-Wise VPN screen and prompts location selection.
      */
     private fun openRpnScreen() {
-        val intent =
-            FragmentHostActivity.createIntent(context = this, fragmentClass = ServerSelectionFragment::class.java)
+        val intent = Intent(this, WgMainActivity::class.java).apply {
+            putExtra("open_location_chooser", true)
+        }
         startActivity(intent)
     }
 

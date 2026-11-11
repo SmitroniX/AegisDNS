@@ -39,6 +39,7 @@ import com.celzero.bravedns.database.Severity
 import com.celzero.bravedns.databinding.ActivityWireguardMainBinding
 import com.celzero.bravedns.service.EventLogger
 import com.celzero.bravedns.service.PersistentState
+import com.celzero.bravedns.service.VpnController
 import com.celzero.bravedns.service.WireguardManager
 import com.celzero.bravedns.ui.BaseActivity
 import com.celzero.bravedns.util.Logger
@@ -178,6 +179,10 @@ class WgMainActivity :
         handleFrostEffectIfNeeded(persistentState.theme)
 
         init()
+
+        if (intent.getBooleanExtra("open_location_chooser", false)) {
+            showLocationVpnChooser()
+        }
 
         if (isAtleastQ()) {
             val controller = WindowInsetsControllerCompat(window, window.decorView)
@@ -477,12 +482,28 @@ class WgMainActivity :
             withContext(Dispatchers.Main) {
                 if (isFinishing || isDestroyed) return@withContext
                 if (cfg != null) {
+                    if (appConfig.getBraveMode().isDnsMode()) {
+                        appConfig.changeBraveMode(AppConfig.BraveMode.DNS_FIREWALL.mode)
+                    }
+
+                    WireguardManager.updateOneWireGuardConfig(cfg.getId(), owg = true)
+                    val map = WireguardManager.getConfigFilesById(cfg.getId())
+                    if (map != null) {
+                        WireguardManager.enableConfig(map)
+                    }
+
+                    if (!VpnController.isOn()) {
+                        VpnController.start(this@WgMainActivity)
+                    }
+
+                    showOneWgToggle()
+
                     Utilities.showToastUiCentered(
                         this@WgMainActivity,
                         getString(R.string.wg_location_vpn_configured_success, "${preset.flag} ${preset.name}"),
                         Toast.LENGTH_LONG
                     )
-                    logEvent("Wireguard import", "location vpn added: ${preset.code}")
+                    logEvent("Wireguard import", "location vpn added and activated: ${preset.code}")
                 } else {
                     Utilities.showToastUiCentered(
                         this@WgMainActivity,
@@ -505,12 +526,28 @@ class WgMainActivity :
             withContext(Dispatchers.Main) {
                 if (isFinishing || isDestroyed) return@withContext
                 if (cfg != null) {
+                    if (appConfig.getBraveMode().isDnsMode()) {
+                        appConfig.changeBraveMode(AppConfig.BraveMode.DNS_FIREWALL.mode)
+                    }
+
+                    WireguardManager.updateOneWireGuardConfig(cfg.getId(), owg = true)
+                    val map = WireguardManager.getConfigFilesById(cfg.getId())
+                    if (map != null) {
+                        WireguardManager.enableConfig(map)
+                    }
+
+                    if (!VpnController.isOn()) {
+                        VpnController.start(this@WgMainActivity)
+                    }
+
+                    showOneWgToggle()
+
                     Utilities.showToastUiCentered(
                         this@WgMainActivity,
                         getString(R.string.wg_warp_configured_success),
                         Toast.LENGTH_LONG
                     )
-                    logEvent("Wireguard import", "preconfigured warp added")
+                    logEvent("Wireguard import", "preconfigured warp added and activated")
                 } else {
                     Utilities.showToastUiCentered(
                         this@WgMainActivity,

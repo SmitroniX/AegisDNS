@@ -806,8 +806,8 @@ object WireguardManager : KoinComponent {
                 .addPeers(config.getPeers())
                 .build()
         writeConfigAndUpdateDb(cfg)
-        Logger.d(LOG_TAG_PROXY, "config added: ${config.getId()}, ${config.getName()}")
-        return config
+        Logger.d(LOG_TAG_PROXY, "config added: ${cfg.getId()}, ${cfg.getName()}")
+        return cfg
     }
 
     suspend fun addCloudflareWarpConfig(name: String = "Cloudflare WARP"): Config? =
@@ -852,6 +852,8 @@ object WireguardManager : KoinComponent {
                     if (conn.responseCode in 200..299) {
                         val responseText = conn.inputStream.bufferedReader().use { it.readText() }
                         val root = JSONObject(responseText)
+                        val regId = root.optString("id")
+                        val token = root.optString("token")
                         val config = root.optJSONObject("config")
                         if (config != null) {
                             val iface = config.optJSONObject("interface")
@@ -869,6 +871,28 @@ object WireguardManager : KoinComponent {
                                 val ep = p.optJSONObject("endpoint")
                                 val host = ep?.optString("host")
                                 if (!host.isNullOrEmpty()) endpoint = host
+                            }
+                        }
+
+                        // Activate Cloudflare WARP routing
+                        if (regId.isNotEmpty() && token.isNotEmpty()) {
+                            try {
+                                val patchUrl = URL("https://api.cloudflareclient.com/v0a2158/reg/$regId")
+                                val patchConn = patchUrl.openConnection() as HttpURLConnection
+                                patchConn.requestMethod = "PATCH"
+                                patchConn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                                patchConn.setRequestProperty("Authorization", "Bearer $token")
+                                patchConn.setRequestProperty("User-Agent", "okhttp/3.12.1")
+                                patchConn.doOutput = true
+                                patchConn.connectTimeout = 7000
+                                patchConn.readTimeout = 7000
+                                val patchPayload = JSONObject().apply {
+                                    put("warp_enabled", true)
+                                }
+                                OutputStreamWriter(patchConn.outputStream).use { it.write(patchPayload.toString()) }
+                                Logger.i(LOG_TAG_PROXY, "Cloudflare WARP activation response: ${patchConn.responseCode}")
+                            } catch (pe: Exception) {
+                                Logger.w(LOG_TAG_PROXY, "Failed to patch warp_enabled: ${pe.message}")
                             }
                         }
                     }
@@ -910,17 +934,17 @@ object WireguardManager : KoinComponent {
 
     val LOCATION_PRESETS = listOf(
         LocationVpnPreset("US", "United States", "Ashburn, VA", "🇺🇸", "162.159.192.1:2408"),
-        LocationVpnPreset("GB", "United Kingdom", "London", "🇬🇧", "162.159.192.2:2408"),
-        LocationVpnPreset("DE", "Germany", "Frankfurt", "🇩🇪", "162.159.192.3:2408"),
-        LocationVpnPreset("JP", "Japan", "Tokyo", "🇯🇵", "162.159.192.4:2408"),
-        LocationVpnPreset("SG", "Singapore", "Singapore", "🇸🇬", "162.159.192.5:2408"),
-        LocationVpnPreset("CA", "Canada", "Toronto", "🇨🇦", "162.159.192.6:2408"),
-        LocationVpnPreset("NL", "Netherlands", "Amsterdam", "🇳🇱", "162.159.192.7:2408"),
-        LocationVpnPreset("IN", "India", "Mumbai", "🇮🇳", "162.159.192.8:2408"),
-        LocationVpnPreset("FR", "France", "Paris", "🇫🇷", "162.159.192.9:2408"),
-        LocationVpnPreset("AU", "Australia", "Sydney", "🇦🇺", "162.159.192.10:2408"),
-        LocationVpnPreset("CH", "Switzerland", "Zurich", "🇨🇭", "162.159.193.1:2408"),
-        LocationVpnPreset("BR", "Brazil", "São Paulo", "🇧🇷", "162.159.193.2:2408")
+        LocationVpnPreset("GB", "United Kingdom", "London", "🇬🇧", "162.159.192.1:2408"),
+        LocationVpnPreset("DE", "Germany", "Frankfurt", "🇩🇪", "162.159.192.1:2408"),
+        LocationVpnPreset("JP", "Japan", "Tokyo", "🇯🇵", "162.159.192.1:2408"),
+        LocationVpnPreset("SG", "Singapore", "Singapore", "🇸🇬", "162.159.192.1:2408"),
+        LocationVpnPreset("CA", "Canada", "Toronto", "🇨🇦", "162.159.192.1:2408"),
+        LocationVpnPreset("NL", "Netherlands", "Amsterdam", "🇳🇱", "162.159.192.1:2408"),
+        LocationVpnPreset("IN", "India", "Mumbai", "🇮🇳", "162.159.192.1:2408"),
+        LocationVpnPreset("FR", "France", "Paris", "🇫🇷", "162.159.192.1:2408"),
+        LocationVpnPreset("AU", "Australia", "Sydney", "🇦🇺", "162.159.192.1:2408"),
+        LocationVpnPreset("CH", "Switzerland", "Zurich", "🇨🇭", "162.159.192.1:2408"),
+        LocationVpnPreset("BR", "Brazil", "São Paulo", "🇧🇷", "162.159.192.1:2408")
     )
 
     suspend fun addLocationVpnConfig(preset: LocationVpnPreset): Config? =
@@ -957,7 +981,7 @@ object WireguardManager : KoinComponent {
                         put("tos", now)
                         put("model", "Android")
                         put("type", "Android")
-                        put("locale", Locale.getDefault().toString())
+                        put("locale", "en_${preset.code}")
                     }
 
                     OutputStreamWriter(conn.outputStream).use { it.write(jsonPayload.toString()) }
@@ -965,6 +989,8 @@ object WireguardManager : KoinComponent {
                     if (conn.responseCode in 200..299) {
                         val responseText = conn.inputStream.bufferedReader().use { it.readText() }
                         val root = JSONObject(responseText)
+                        val regId = root.optString("id")
+                        val token = root.optString("token")
                         val config = root.optJSONObject("config")
                         if (config != null) {
                             val iface = config.optJSONObject("interface")
@@ -979,6 +1005,31 @@ object WireguardManager : KoinComponent {
                                 val p = peers.getJSONObject(0)
                                 val pk = p.optString("public_key")
                                 if (!pk.isNullOrEmpty()) peerPublicKey = pk
+                                val ep = p.optJSONObject("endpoint")
+                                val host = ep?.optString("host")
+                                if (!host.isNullOrEmpty()) endpoint = host
+                            }
+                        }
+
+                        // Activate Cloudflare WARP routing for this location
+                        if (regId.isNotEmpty() && token.isNotEmpty()) {
+                            try {
+                                val patchUrl = URL("https://api.cloudflareclient.com/v0a2158/reg/$regId")
+                                val patchConn = patchUrl.openConnection() as HttpURLConnection
+                                patchConn.requestMethod = "PATCH"
+                                patchConn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                                patchConn.setRequestProperty("Authorization", "Bearer $token")
+                                patchConn.setRequestProperty("User-Agent", "okhttp/3.12.1")
+                                patchConn.doOutput = true
+                                patchConn.connectTimeout = 7000
+                                patchConn.readTimeout = 7000
+                                val patchPayload = JSONObject().apply {
+                                    put("warp_enabled", true)
+                                }
+                                OutputStreamWriter(patchConn.outputStream).use { it.write(patchPayload.toString()) }
+                                Logger.i(LOG_TAG_PROXY, "Cloudflare WARP activation response for ${preset.code}: ${patchConn.responseCode}")
+                            } catch (pe: Exception) {
+                                Logger.w(LOG_TAG_PROXY, "Failed to patch warp_enabled for ${preset.code}: ${pe.message}")
                             }
                         }
                     }
