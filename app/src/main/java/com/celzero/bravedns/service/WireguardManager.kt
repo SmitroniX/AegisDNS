@@ -45,16 +45,18 @@ import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 import java.io.ByteArrayInputStream
 import java.io.File
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.TimeUnit
 import com.celzero.bravedns.wireguard.KeyPair
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
 object WireguardManager : KoinComponent {
@@ -357,49 +359,47 @@ object WireguardManager : KoinComponent {
         return false
     }
 
-    suspend fun enableConfig(unmapped: WgConfigFilesImmutable) {
-        io {
-            val map = mappings.find { it.id == unmapped.id }
-            if (map == null) {
-                Logger.e(
-                    LOG_TAG_PROXY,
-                    "enableConfig: wg not found, id: ${unmapped.id}, ${mappings.size}"
-                )
-                return@io
-            }
-
-            val config = configs.find { it.getId() == map.id }
-            if (config == null) {
-                Logger.w(LOG_TAG_PROXY, "config not found: ${map.id}")
-                return@io
-            }
-
-            mappings.remove(map)
-            val newMap =
-                WgConfigFilesImmutable(
-                    map.id,
-                    map.name,
-                    map.configPath,
-                    map.serverResponse,
-                    true,
-                    map.isCatchAll,
-                    map.isLockdown,
-                    map.oneWireGuard,
-                    map.useOnlyOnMetered,
-                    map.isDeletable,
-                    map.ssidEnabled,
-                    map.ssids,
-                    map.isSplitProxy
-                )
-            mappings.add(newMap)
-            val dbMap = WgConfigFiles.fromImmutable(newMap)
-            db.update(dbMap)
-            val proxyType = AppConfig.ProxyType.WIREGUARD
-            val proxyProvider = AppConfig.ProxyProvider.WIREGUARD
-            appConfig.addProxy(proxyType, proxyProvider)
-            VpnController.addWireGuardProxy(ID_WG_BASE + map.id)
-            Logger.i(LOG_TAG_PROXY, "enable wg config: ${map.id}, ${map.name}")
+    suspend fun enableConfig(unmapped: WgConfigFilesImmutable) = withContext(Dispatchers.IO) {
+        val map = mappings.find { it.id == unmapped.id }
+        if (map == null) {
+            Logger.e(
+                LOG_TAG_PROXY,
+                "enableConfig: wg not found, id: ${unmapped.id}, ${mappings.size}"
+            )
+            return@withContext
         }
+
+        val config = configs.find { it.getId() == map.id }
+        if (config == null) {
+            Logger.w(LOG_TAG_PROXY, "config not found: ${map.id}")
+            return@withContext
+        }
+
+        mappings.remove(map)
+        val newMap =
+            WgConfigFilesImmutable(
+                map.id,
+                map.name,
+                map.configPath,
+                map.serverResponse,
+                true,
+                map.isCatchAll,
+                map.isLockdown,
+                map.oneWireGuard,
+                map.useOnlyOnMetered,
+                map.isDeletable,
+                map.ssidEnabled,
+                map.ssids,
+                map.isSplitProxy
+            )
+        mappings.add(newMap)
+        val dbMap = WgConfigFiles.fromImmutable(newMap)
+        db.update(dbMap)
+        val proxyType = AppConfig.ProxyType.WIREGUARD
+        val proxyProvider = AppConfig.ProxyProvider.WIREGUARD
+        appConfig.addProxy(proxyType, proxyProvider)
+        VpnController.addWireGuardProxy(ID_WG_BASE + map.id)
+        Logger.i(LOG_TAG_PROXY, "enable wg config: ${map.id}, ${map.name}")
     }
 
     fun canEnableProxy(): Boolean {
@@ -810,6 +810,191 @@ object WireguardManager : KoinComponent {
         return cfg
     }
 
+    private const val WARP_REG_URL = "https://api.cloudflareclient.com/v0a2158/reg"
+    private const val WARP_CLIENT_VERSION = "a-6.11-2223"
+    private const val WARP_USER_AGENT = "okhttp/3.12.1"
+    private const val WARP_DEFAULT_ENDPOINT = "162.159.192.1:2408"
+    private const val WARP_DEFAULT_PEER_PUBKEY = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+
+    internal data class WarpRegistration(
+        val regId: String,
+        val token: String,
+        val clientIpv4: String,
+        val clientIpv6: String,
+        val peerPublicKey: String,
+        val endpoint: String,
+        val clientId: String
+    )
+
+    private val warpHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .writeTimeout(8, TimeUnit.SECONDS)
+            .build()
+    }
+
+    internal fun parseWarpRegistrationJson(
+        responseText: String,
+        fallbackEndpoint: String = WARP_DEFAULT_ENDPOINT
+    ): WarpRegistration? {
+        return try {
+            val root = JSONObject(responseText)
+            val regId = root.optString("id", "").trim()
+            val token = root.optString("token", "").trim()
+            val config = root.optJSONObject("config") ?: return null
+            val clientId = config.optString("client_id", "").trim()
+
+            val addrs = config.optJSONObject("interface")?.optJSONObject("addresses")
+            val v4 = addrs?.optString("v4", "")?.trim().orEmpty()
+            val v6 = addrs?.optString("v6", "")?.trim().orEmpty()
+            if (v4.isEmpty()) return null
+
+            val clientIpv4 = if (v4.contains("/")) v4 else "$v4/32"
+            val clientIpv6 = when {
+                v6.isEmpty() -> ""
+                v6.contains("/") -> v6
+                else -> "$v6/128"
+            }
+
+            var peerPublicKey = WARP_DEFAULT_PEER_PUBKEY
+            var endpoint = fallbackEndpoint
+            val peers = config.optJSONArray("peers")
+            if (peers != null && peers.length() > 0) {
+                val p = peers.getJSONObject(0)
+                val pk = p.optString("public_key", "").trim()
+                if (pk.isNotEmpty()) peerPublicKey = pk
+
+                val ep = p.optJSONObject("endpoint")
+                if (ep != null) {
+                    val ports = ep.optJSONArray("ports")
+                    val preferredPort =
+                        if (ports != null && ports.length() > 0 && ports.optInt(0, 0) in 1..65535) {
+                            ports.optInt(0, 2408)
+                        } else {
+                            2408
+                        }
+                    val v4Ep = ep.optString("v4", "").trim()
+                    val v4Host = v4Ep.substringBefore(":").trim()
+                    val hostEp = ep.optString("host", "").trim()
+                    endpoint = when {
+                        v4Host.isNotEmpty() -> "$v4Host:$preferredPort"
+                        hostEp.isNotEmpty() -> hostEp
+                        else -> fallbackEndpoint
+                    }
+                }
+            }
+
+            WarpRegistration(
+                regId = regId,
+                token = token,
+                clientIpv4 = clientIpv4,
+                clientIpv6 = clientIpv6,
+                peerPublicKey = peerPublicKey,
+                endpoint = endpoint,
+                clientId = clientId
+            )
+        } catch (e: Exception) {
+            Logger.e(LOG_TAG_PROXY, "Failed to parse Cloudflare WARP JSON: ${e.message}", e)
+            null
+        }
+    }
+
+    internal fun buildWarpConfigString(
+        privateKey: String,
+        registration: WarpRegistration,
+        dnsServers: String
+    ): String {
+        val addressLine =
+            if (registration.clientIpv6.isNotEmpty()) {
+                "${registration.clientIpv4}, ${registration.clientIpv6}"
+            } else {
+                registration.clientIpv4
+            }
+        val clientIdLine =
+            if (registration.clientId.isNotEmpty()) {
+                "\nClientID = ${registration.clientId}"
+            } else {
+                ""
+            }
+        return """
+            [Interface]
+            PrivateKey = $privateKey
+            Address = $addressLine
+            DNS = $dnsServers
+            MTU = 1280$clientIdLine
+
+            [Peer]
+            PublicKey = ${registration.peerPublicKey}
+            AllowedIPs = 0.0.0.0/0, ::/0
+            Endpoint = ${registration.endpoint}
+            PersistentKeepalive = 25
+        """.trimIndent()
+    }
+
+    private fun registerCloudflareWarpCredentials(
+        publicKey: String,
+        locale: String,
+        fallbackEndpoint: String = WARP_DEFAULT_ENDPOINT
+    ): WarpRegistration? {
+        val jsonMediaType = "application/json; charset=UTF-8".toMediaType()
+        val now =
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }.format(Date())
+
+        val regPayload = JSONObject().apply {
+            put("key", publicKey)
+            put("install_id", "")
+            put("fcm_token", "")
+            put("tos", now)
+            put("model", "Android")
+            put("type", "Android")
+            put("locale", locale)
+        }
+
+        val regRequest = Request.Builder()
+            .url(WARP_REG_URL)
+            .post(regPayload.toString().toRequestBody(jsonMediaType))
+            .header("User-Agent", WARP_USER_AGENT)
+            .header("CF-Client-Version", WARP_CLIENT_VERSION)
+            .build()
+
+        val registration = warpHttpClient.newCall(regRequest).execute().use { response ->
+            if (!response.isSuccessful) {
+                Logger.w(LOG_TAG_PROXY, "Cloudflare WARP reg failed: HTTP ${response.code}")
+                return null
+            }
+            val body = response.body.string()
+            parseWarpRegistrationJson(body, fallbackEndpoint)
+        } ?: return null
+
+        // Activate Cloudflare WARP routing using OkHttp PATCH (HttpURLConnection rejects PATCH on Android)
+        if (registration.regId.isNotEmpty() && registration.token.isNotEmpty()) {
+            val patchPayload = JSONObject().apply { put("warp_enabled", true) }
+            val patchRequest = Request.Builder()
+                .url("$WARP_REG_URL/${registration.regId}")
+                .patch(patchPayload.toString().toRequestBody(jsonMediaType))
+                .header("Authorization", "Bearer ${registration.token}")
+                .header("User-Agent", WARP_USER_AGENT)
+                .header("CF-Client-Version", WARP_CLIENT_VERSION)
+                .build()
+
+            warpHttpClient.newCall(patchRequest).execute().use { patchResponse ->
+                if (!patchResponse.isSuccessful) {
+                    Logger.w(
+                        LOG_TAG_PROXY,
+                        "Cloudflare WARP PATCH warp_enabled failed: HTTP ${patchResponse.code}"
+                    )
+                    return null
+                }
+                Logger.i(LOG_TAG_PROXY, "Cloudflare WARP activated (HTTP ${patchResponse.code})")
+            }
+        }
+
+        return registration
+    }
+
     suspend fun addCloudflareWarpConfig(name: String = "Cloudflare WARP"): Config? =
         withContext(Dispatchers.IO) {
             try {
@@ -817,105 +1002,25 @@ object WireguardManager : KoinComponent {
                 val privateKey = keyPair.getPrivateKey().base64()
                 val publicKey = keyPair.getPublicKey().base64()
 
-                var clientIpv4 = "172.16.0.2/32"
-                var clientIpv6 = "2606:4700:110:8f81:857e:8b9a:b042:d72b/128"
-                var endpoint = "162.159.192.1:2408"
-                var peerPublicKey = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
-
-                try {
-                    val url = URL("https://api.cloudflareclient.com/v0a2158/reg")
-                    val conn = url.openConnection() as HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                    conn.setRequestProperty("User-Agent", "okhttp/3.12.1")
-                    conn.doOutput = true
-                    conn.connectTimeout = 7000
-                    conn.readTimeout = 7000
-
-                    val now =
-                        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
-                            timeZone = TimeZone.getTimeZone("UTC")
-                        }.format(Date())
-
-                    val jsonPayload = JSONObject().apply {
-                        put("key", publicKey)
-                        put("install_id", "")
-                        put("fcm_token", "")
-                        put("tos", now)
-                        put("model", "Android")
-                        put("type", "Android")
-                        put("locale", Locale.getDefault().toString())
-                    }
-
-                    OutputStreamWriter(conn.outputStream).use { it.write(jsonPayload.toString()) }
-
-                    if (conn.responseCode in 200..299) {
-                        val responseText = conn.inputStream.bufferedReader().use { it.readText() }
-                        val root = JSONObject(responseText)
-                        val regId = root.optString("id")
-                        val token = root.optString("token")
-                        val config = root.optJSONObject("config")
-                        if (config != null) {
-                            val iface = config.optJSONObject("interface")
-                            val addrs = iface?.optJSONObject("addresses")
-                            val v4 = addrs?.optString("v4")
-                            val v6 = addrs?.optString("v6")
-                            if (!v4.isNullOrEmpty()) clientIpv4 = "$v4/32"
-                            if (!v6.isNullOrEmpty()) clientIpv6 = "$v6/128"
-
-                            val peers = config.optJSONArray("peers")
-                            if (peers != null && peers.length() > 0) {
-                                val p = peers.getJSONObject(0)
-                                val pk = p.optString("public_key")
-                                if (!pk.isNullOrEmpty()) peerPublicKey = pk
-                                val ep = p.optJSONObject("endpoint")
-                                val host = ep?.optString("host")
-                                if (!host.isNullOrEmpty()) endpoint = host
-                            }
-                        }
-
-                        // Activate Cloudflare WARP routing
-                        if (regId.isNotEmpty() && token.isNotEmpty()) {
-                            try {
-                                val patchUrl = URL("https://api.cloudflareclient.com/v0a2158/reg/$regId")
-                                val patchConn = patchUrl.openConnection() as HttpURLConnection
-                                patchConn.requestMethod = "PATCH"
-                                patchConn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                                patchConn.setRequestProperty("Authorization", "Bearer $token")
-                                patchConn.setRequestProperty("User-Agent", "okhttp/3.12.1")
-                                patchConn.doOutput = true
-                                patchConn.connectTimeout = 7000
-                                patchConn.readTimeout = 7000
-                                val patchPayload = JSONObject().apply {
-                                    put("warp_enabled", true)
-                                }
-                                OutputStreamWriter(patchConn.outputStream).use { it.write(patchPayload.toString()) }
-                                Logger.i(LOG_TAG_PROXY, "Cloudflare WARP activation response: ${patchConn.responseCode}")
-                            } catch (pe: Exception) {
-                                Logger.w(LOG_TAG_PROXY, "Failed to patch warp_enabled: ${pe.message}")
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Logger.w(LOG_TAG_PROXY, "Live Cloudflare WARP registration fallback: ${e.message}")
+                val registration =
+                    registerCloudflareWarpCredentials(
+                        publicKey = publicKey,
+                        locale = Locale.getDefault().toString(),
+                        fallbackEndpoint = WARP_DEFAULT_ENDPOINT
+                    )
+                if (registration == null) {
+                    Logger.e(LOG_TAG_PROXY, "Aborting WARP setup: live registration failed")
+                    return@withContext null
                 }
 
                 val confContent =
-                    """
-                    [Interface]
-                    PrivateKey = $privateKey
-                    Address = $clientIpv4, $clientIpv6
-                    DNS = 1.1.1.1, 2606:4700:4700::1111
-                    MTU = 1280
-
-                    [Peer]
-                    PublicKey = $peerPublicKey
-                    AllowedIPs = 0.0.0.0/0, ::/0
-                    Endpoint = $endpoint
-                    PersistentKeepalive = 25
-                    """.trimIndent()
-
-                val config = Config.parse(ByteArrayInputStream(confContent.toByteArray(StandardCharsets.UTF_8)))
+                    buildWarpConfigString(
+                        privateKey = privateKey,
+                        registration = registration,
+                        dnsServers = "1.1.1.1, 2606:4700:4700::1111"
+                    )
+                val config =
+                    Config.parse(ByteArrayInputStream(confContent.toByteArray(StandardCharsets.UTF_8)))
                 addConfig(config, name)
             } catch (e: Exception) {
                 Logger.e(LOG_TAG_PROXY, "Error adding preconfigured WARP tunnel: ${e.message}", e)
@@ -933,18 +1038,18 @@ object WireguardManager : KoinComponent {
     )
 
     val LOCATION_PRESETS = listOf(
-        LocationVpnPreset("US", "United States", "Ashburn, VA", "🇺🇸", "162.159.192.1:2408"),
-        LocationVpnPreset("GB", "United Kingdom", "London", "🇬🇧", "162.159.192.1:2408"),
-        LocationVpnPreset("DE", "Germany", "Frankfurt", "🇩🇪", "162.159.192.1:2408"),
-        LocationVpnPreset("JP", "Japan", "Tokyo", "🇯🇵", "162.159.192.1:2408"),
-        LocationVpnPreset("SG", "Singapore", "Singapore", "🇸🇬", "162.159.192.1:2408"),
-        LocationVpnPreset("CA", "Canada", "Toronto", "🇨🇦", "162.159.192.1:2408"),
-        LocationVpnPreset("NL", "Netherlands", "Amsterdam", "🇳🇱", "162.159.192.1:2408"),
-        LocationVpnPreset("IN", "India", "Mumbai", "🇮🇳", "162.159.192.1:2408"),
-        LocationVpnPreset("FR", "France", "Paris", "🇫🇷", "162.159.192.1:2408"),
-        LocationVpnPreset("AU", "Australia", "Sydney", "🇦🇺", "162.159.192.1:2408"),
-        LocationVpnPreset("CH", "Switzerland", "Zurich", "🇨🇭", "162.159.192.1:2408"),
-        LocationVpnPreset("BR", "Brazil", "São Paulo", "🇧🇷", "162.159.192.1:2408")
+        LocationVpnPreset("US", "United States", "Ashburn, VA", "🇺🇸", WARP_DEFAULT_ENDPOINT),
+        LocationVpnPreset("GB", "United Kingdom", "London", "🇬🇧", WARP_DEFAULT_ENDPOINT),
+        LocationVpnPreset("DE", "Germany", "Frankfurt", "🇩🇪", WARP_DEFAULT_ENDPOINT),
+        LocationVpnPreset("JP", "Japan", "Tokyo", "🇯🇵", WARP_DEFAULT_ENDPOINT),
+        LocationVpnPreset("SG", "Singapore", "Singapore", "🇸🇬", WARP_DEFAULT_ENDPOINT),
+        LocationVpnPreset("CA", "Canada", "Toronto", "🇨🇦", WARP_DEFAULT_ENDPOINT),
+        LocationVpnPreset("NL", "Netherlands", "Amsterdam", "🇳🇱", WARP_DEFAULT_ENDPOINT),
+        LocationVpnPreset("IN", "India", "Mumbai", "🇮🇳", WARP_DEFAULT_ENDPOINT),
+        LocationVpnPreset("FR", "France", "Paris", "🇫🇷", WARP_DEFAULT_ENDPOINT),
+        LocationVpnPreset("AU", "Australia", "Sydney", "🇦🇺", WARP_DEFAULT_ENDPOINT),
+        LocationVpnPreset("CH", "Switzerland", "Zurich", "🇨🇭", WARP_DEFAULT_ENDPOINT),
+        LocationVpnPreset("BR", "Brazil", "São Paulo", "🇧🇷", WARP_DEFAULT_ENDPOINT)
     )
 
     suspend fun addLocationVpnConfig(preset: LocationVpnPreset): Config? =
@@ -954,105 +1059,28 @@ object WireguardManager : KoinComponent {
                 val privateKey = keyPair.getPrivateKey().base64()
                 val publicKey = keyPair.getPublicKey().base64()
 
-                var clientIpv4 = "172.16.0.2/32"
-                var clientIpv6 = "2606:4700:110:8f81:857e:8b9a:b042:d72b/128"
-                var endpoint = preset.endpoint
-                var peerPublicKey = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
-
-                try {
-                    val url = URL("https://api.cloudflareclient.com/v0a2158/reg")
-                    val conn = url.openConnection() as HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                    conn.setRequestProperty("User-Agent", "okhttp/3.12.1")
-                    conn.doOutput = true
-                    conn.connectTimeout = 7000
-                    conn.readTimeout = 7000
-
-                    val now =
-                        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
-                            timeZone = TimeZone.getTimeZone("UTC")
-                        }.format(Date())
-
-                    val jsonPayload = JSONObject().apply {
-                        put("key", publicKey)
-                        put("install_id", "")
-                        put("fcm_token", "")
-                        put("tos", now)
-                        put("model", "Android")
-                        put("type", "Android")
-                        put("locale", "en_${preset.code}")
-                    }
-
-                    OutputStreamWriter(conn.outputStream).use { it.write(jsonPayload.toString()) }
-
-                    if (conn.responseCode in 200..299) {
-                        val responseText = conn.inputStream.bufferedReader().use { it.readText() }
-                        val root = JSONObject(responseText)
-                        val regId = root.optString("id")
-                        val token = root.optString("token")
-                        val config = root.optJSONObject("config")
-                        if (config != null) {
-                            val iface = config.optJSONObject("interface")
-                            val addrs = iface?.optJSONObject("addresses")
-                            val v4 = addrs?.optString("v4")
-                            val v6 = addrs?.optString("v6")
-                            if (!v4.isNullOrEmpty()) clientIpv4 = "$v4/32"
-                            if (!v6.isNullOrEmpty()) clientIpv6 = "$v6/128"
-
-                            val peers = config.optJSONArray("peers")
-                            if (peers != null && peers.length() > 0) {
-                                val p = peers.getJSONObject(0)
-                                val pk = p.optString("public_key")
-                                if (!pk.isNullOrEmpty()) peerPublicKey = pk
-                                val ep = p.optJSONObject("endpoint")
-                                val host = ep?.optString("host")
-                                if (!host.isNullOrEmpty()) endpoint = host
-                            }
-                        }
-
-                        // Activate Cloudflare WARP routing for this location
-                        if (regId.isNotEmpty() && token.isNotEmpty()) {
-                            try {
-                                val patchUrl = URL("https://api.cloudflareclient.com/v0a2158/reg/$regId")
-                                val patchConn = patchUrl.openConnection() as HttpURLConnection
-                                patchConn.requestMethod = "PATCH"
-                                patchConn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                                patchConn.setRequestProperty("Authorization", "Bearer $token")
-                                patchConn.setRequestProperty("User-Agent", "okhttp/3.12.1")
-                                patchConn.doOutput = true
-                                patchConn.connectTimeout = 7000
-                                patchConn.readTimeout = 7000
-                                val patchPayload = JSONObject().apply {
-                                    put("warp_enabled", true)
-                                }
-                                OutputStreamWriter(patchConn.outputStream).use { it.write(patchPayload.toString()) }
-                                Logger.i(LOG_TAG_PROXY, "Cloudflare WARP activation response for ${preset.code}: ${patchConn.responseCode}")
-                            } catch (pe: Exception) {
-                                Logger.w(LOG_TAG_PROXY, "Failed to patch warp_enabled for ${preset.code}: ${pe.message}")
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Logger.w(LOG_TAG_PROXY, "Live registration fallback for ${preset.code}: ${e.message}")
+                val registration =
+                    registerCloudflareWarpCredentials(
+                        publicKey = publicKey,
+                        locale = "en_${preset.code}",
+                        fallbackEndpoint = preset.endpoint
+                    )
+                if (registration == null) {
+                    Logger.e(
+                        LOG_TAG_PROXY,
+                        "Aborting Location VPN (${preset.code}) setup: live registration failed"
+                    )
+                    return@withContext null
                 }
 
                 val confContent =
-                    """
-                    [Interface]
-                    PrivateKey = $privateKey
-                    Address = $clientIpv4, $clientIpv6
-                    DNS = ${preset.dns}
-                    MTU = 1280
-
-                    [Peer]
-                    PublicKey = $peerPublicKey
-                    AllowedIPs = 0.0.0.0/0, ::/0
-                    Endpoint = $endpoint
-                    PersistentKeepalive = 25
-                    """.trimIndent()
-
-                val config = Config.parse(ByteArrayInputStream(confContent.toByteArray(StandardCharsets.UTF_8)))
+                    buildWarpConfigString(
+                        privateKey = privateKey,
+                        registration = registration,
+                        dnsServers = preset.dns
+                    )
+                val config =
+                    Config.parse(ByteArrayInputStream(confContent.toByteArray(StandardCharsets.UTF_8)))
                 val tunnelName = "${preset.flag} ${preset.name} (${preset.city})"
                 addConfig(config, tunnelName)
             } catch (e: Exception) {

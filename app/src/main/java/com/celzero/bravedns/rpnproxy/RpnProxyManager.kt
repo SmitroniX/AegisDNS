@@ -2289,7 +2289,9 @@ object RpnProxyManager : KoinComponent {
     }
 
     fun hasValidSubscription(): Boolean {
-        return true
+        val valid = subscriptionStateMachine.hasValidSubscription()
+        Logger.i(LOG_TAG_PROXY, "$TAG; using state machine for subscription check, valid: $valid")
+        return valid
     }
 
     suspend fun handleUserCancellation(purchaseToken: String? = null) {
@@ -2866,20 +2868,20 @@ object RpnProxyManager : KoinComponent {
 
          val locations = locationsRes.first
          if (locations == null) {
-             Logger.w(LOG_TAG_PROXY, "$TAG; err; win props is null, falling back to built-in locations")
-             return Pair(getBuiltinLocationConfigs(), emptyList())
+             Logger.w(LOG_TAG_PROXY, "$TAG; err; win props is null")
+             return Pair(emptySet(), emptyList())
          }
 
          val count = try {
              locations.len()
          } catch (e: Exception) {
              Logger.e(LOG_TAG_PROXY, "$TAG; fetchAndConstructWinLocations: exception getting locations count: ${e.message}", e)
-             return Pair(getBuiltinLocationConfigs(), emptyList())
+             return Pair(emptySet(), emptyList())
          }
 
          if (count == 0L) {
-             Logger.w(LOG_TAG_PROXY, "$TAG; err; no locations found in win props, falling back to built-in locations")
-             return Pair(getBuiltinLocationConfigs(), emptyList())
+             Logger.w(LOG_TAG_PROXY, "$TAG; err; no locations found in win props")
+             return Pair(emptySet(), emptyList())
          }
 
          val newServers = mutableSetOf<CountryConfig>()

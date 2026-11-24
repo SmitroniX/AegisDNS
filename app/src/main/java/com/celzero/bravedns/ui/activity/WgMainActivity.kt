@@ -15,11 +15,13 @@
  */
 package com.celzero.bravedns.ui.activity
 
+import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.net.VpnService
 import android.os.Bundle
 import android.view.View
 import android.widget.Toast
@@ -76,6 +78,25 @@ class WgMainActivity :
     private var wgConfigAdapter: WgConfigAdapter? = null
     private var oneWgConfigAdapter: OneWgConfigAdapter? = null
     private val wgConfigViewModel: WgConfigViewModel by viewModel()
+    private var isSettingUpTunnel: Boolean = false
+    private var pendingActivationSuccessMsg: String? = null
+
+    private val vpnPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                VpnController.start(this)
+                pendingActivationSuccessMsg?.let { msg ->
+                    Utilities.showToastUiCentered(this, msg, Toast.LENGTH_LONG)
+                }
+            } else {
+                Utilities.showToastUiCentered(
+                    this,
+                    getString(R.string.wg_vpn_permission_denied),
+                    Toast.LENGTH_LONG
+                )
+            }
+            pendingActivationSuccessMsg = null
+        }
 
     companion object {
         private val IMPORT_LAUNCH_INPUT = arrayOf("*/*")
@@ -472,90 +493,140 @@ class WgMainActivity :
     }
 
     private fun setupLocationVpn(preset: WireguardManager.LocationVpnPreset) {
+        if (isSettingUpTunnel) return
+        isSettingUpTunnel = true
         Utilities.showToastUiCentered(
             this,
             getString(R.string.wg_configuring_location_vpn, preset.name),
             Toast.LENGTH_SHORT
         )
         lifecycleScope.launch {
-            val cfg = WireguardManager.addLocationVpnConfig(preset)
-            withContext(Dispatchers.Main) {
-                if (isFinishing || isDestroyed) return@withContext
-                if (cfg != null) {
-                    if (appConfig.getBraveMode().isDnsMode()) {
-                        appConfig.changeBraveMode(AppConfig.BraveMode.DNS_FIREWALL.mode)
-                    }
-
-                    WireguardManager.updateOneWireGuardConfig(cfg.getId(), owg = true)
-                    val map = WireguardManager.getConfigFilesById(cfg.getId())
-                    if (map != null) {
-                        WireguardManager.enableConfig(map)
-                    }
-
-                    if (!VpnController.isOn()) {
-                        VpnController.start(this@WgMainActivity)
-                    }
-
-                    showOneWgToggle()
-
-                    Utilities.showToastUiCentered(
-                        this@WgMainActivity,
-                        getString(R.string.wg_location_vpn_configured_success, "${preset.flag} ${preset.name}"),
-                        Toast.LENGTH_LONG
-                    )
-                    logEvent("Wireguard import", "location vpn added and activated: ${preset.code}")
-                } else {
-                    Utilities.showToastUiCentered(
-                        this@WgMainActivity,
-                        getString(R.string.new_warp_error_toast),
-                        Toast.LENGTH_SHORT
-                    )
-                }
+            try {
+                val cfg = WireguardManager.addLocationVpnConfig(preset)
+                activateRegisteredTunnel(
+                    cfg = cfg,
+                    successMessage = getString(
+                        R.string.wg_location_vpn_configured_success,
+                        "${preset.flag} ${preset.name}"
+                    ),
+                    logDetail = "location vpn added and activated: ${preset.code}"
+                )
+            } finally {
+                isSettingUpTunnel = false
             }
         }
     }
 
     private fun setupPreconfiguredWarp() {
+        if (isSettingUpTunnel) return
+        isSettingUpTunnel = true
         Utilities.showToastUiCentered(
             this,
             getString(R.string.wg_configuring_warp),
             Toast.LENGTH_SHORT
         )
         lifecycleScope.launch {
-            val cfg = WireguardManager.addCloudflareWarpConfig()
+            try {
+                val cfg = WireguardManager.addCloudflareWarpConfig()
+                activateRegisteredTunnel(
+                    cfg = cfg,
+                    successMessage = getString(R.string.wg_warp_configured_success),
+                    logDetail = "preconfigured warp added and activated"
+                )
+            } finally {
+                isSettingUpTunnel = false
+            }
+        }
+    }
+
+    private suspend fun activateRegisteredTunnel(
+        cfg: com.celzero.bravedns.wireguard.Config?,
+        successMessage: String,
+        logDetail: String
+    ) {
+        if (cfg == null) {
             withContext(Dispatchers.Main) {
                 if (isFinishing || isDestroyed) return@withContext
-                if (cfg != null) {
-                    if (appConfig.getBraveMode().isDnsMode()) {
-                        appConfig.changeBraveMode(AppConfig.BraveMode.DNS_FIREWALL.mode)
-                    }
-
-                    WireguardManager.updateOneWireGuardConfig(cfg.getId(), owg = true)
-                    val map = WireguardManager.getConfigFilesById(cfg.getId())
-                    if (map != null) {
-                        WireguardManager.enableConfig(map)
-                    }
-
-                    if (!VpnController.isOn()) {
-                        VpnController.start(this@WgMainActivity)
-                    }
-
-                    showOneWgToggle()
-
-                    Utilities.showToastUiCentered(
-                        this@WgMainActivity,
-                        getString(R.string.wg_warp_configured_success),
-                        Toast.LENGTH_LONG
-                    )
-                    logEvent("Wireguard import", "preconfigured warp added and activated")
-                } else {
-                    Utilities.showToastUiCentered(
-                        this@WgMainActivity,
-                        getString(R.string.new_warp_error_toast),
-                        Toast.LENGTH_SHORT
-                    )
-                }
+                Utilities.showToastUiCentered(
+                    this@WgMainActivity,
+                    getString(R.string.new_warp_error_toast),
+                    Toast.LENGTH_LONG
+                )
             }
+            return
+        }
+
+        withContext(Dispatchers.IO) {
+            if (appConfig.getBraveMode().isDnsMode()) {
+                appConfig.changeBraveMode(AppConfig.BraveMode.DNS_FIREWALL.mode)
+            }
+
+            // Ensure One-WireGuard mutual exclusion by disabling any previously active configs
+            if (WireguardManager.isAnyOtherOneWgEnabled(cfg.getId())) {
+                WireguardManager.disableOtherOneWireGuardConfigs(cfg.getId())
+            } else if (WireguardManager.isAnyWgActive() && WireguardManager.canDisableAllActiveConfigs()) {
+                WireguardManager.disableAllActiveConfigs()
+            }
+
+            WireguardManager.updateOneWireGuardConfig(cfg.getId(), owg = true)
+            val map = WireguardManager.getConfigFilesById(cfg.getId())
+            if (map != null) {
+                WireguardManager.enableConfig(map)
+            }
+        }
+
+        withContext(Dispatchers.Main) {
+            if (isFinishing || isDestroyed) return@withContext
+            showOneWgToggle()
+            observeDnsName()
+            logEvent("Wireguard import", logDetail)
+
+            if (VpnController.hasTunnel()) {
+                Utilities.showToastUiCentered(this@WgMainActivity, successMessage, Toast.LENGTH_LONG)
+            } else {
+                startVpnWithPermissionCheck(successMessage)
+            }
+        }
+    }
+
+    private fun startVpnWithPermissionCheck(successMessage: String) {
+        val prepareIntent =
+            try {
+                VpnService.prepare(this)
+            } catch (e: IllegalStateException) {
+                Logger.e(LOG_TAG_PROXY, "VPN lockdown prevents prepare: ${e.message}", e)
+                Utilities.showToastUiCentered(
+                    this,
+                    getString(R.string.hsf_vpn_lockdown_prepare_failure),
+                    Toast.LENGTH_LONG
+                )
+                return
+            } catch (e: Exception) {
+                Logger.e(LOG_TAG_PROXY, "VpnService.prepare failed: ${e.message}", e)
+                Utilities.showToastUiCentered(
+                    this,
+                    getString(R.string.hsf_vpn_prepare_failure),
+                    Toast.LENGTH_LONG
+                )
+                return
+            }
+
+        if (prepareIntent != null) {
+            pendingActivationSuccessMsg = successMessage
+            try {
+                vpnPermissionLauncher.launch(prepareIntent)
+            } catch (e: ActivityNotFoundException) {
+                pendingActivationSuccessMsg = null
+                Logger.e(LOG_TAG_PROXY, "No activity for VPN consent intent: ${e.message}", e)
+                Utilities.showToastUiCentered(
+                    this,
+                    getString(R.string.hsf_vpn_prepare_failure),
+                    Toast.LENGTH_LONG
+                )
+            }
+        } else {
+            VpnController.start(this)
+            Utilities.showToastUiCentered(this, successMessage, Toast.LENGTH_LONG)
         }
     }
 

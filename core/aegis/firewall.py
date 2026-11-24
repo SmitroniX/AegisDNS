@@ -16,11 +16,27 @@ class FirewallAction:
     ISOLATE = "ISOLATE"
     BYPASS = "BYPASS"
 
+    VALID = {ALLOW, BLOCK, ISOLATE, BYPASS}
+
 
 class NetworkType:
     ANY = "ANY"
     METERED = "METERED"      # e.g. Cellular / Mobile data
     UNMETERED = "UNMETERED"  # e.g. Wi-Fi / Ethernet
+
+    VALID = {ANY, METERED, UNMETERED}
+
+
+def _is_loopback_destination(dest_ip: Optional[str]) -> bool:
+    if not dest_ip:
+        return False
+    cleaned = dest_ip.strip().lower()
+    if cleaned == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(cleaned).is_loopback
+    except ValueError:
+        return False
 
 
 class FirewallRule:
@@ -39,14 +55,21 @@ class FirewallRule:
     ):
         self.rule_id = rule_id
         self.action = action.upper()
+        if self.action not in FirewallAction.VALID:
+            raise ValueError(f"Invalid firewall action: '{action}'")
         self.app_id = app_id
         self.network_type = network_type.upper()
-        self.block_background = block_background
+        if self.network_type not in NetworkType.VALID:
+            raise ValueError(f"Invalid network_type: '{network_type}'")
+        self.block_background = bool(block_background)
         self.protocol = protocol.upper() if protocol else None
         self.dest_cidr = dest_cidr
         self._parsed_net = ipaddress.ip_network(dest_cidr.strip(), strict=False) if dest_cidr else None
+        if dest_port is not None:
+            if not isinstance(dest_port, int) or not (1 <= dest_port <= 65535):
+                raise ValueError(f"Invalid dest_port: {dest_port}")
         self.dest_port = dest_port
-        self.domain = domain.lower() if domain else None
+        self.domain = domain.strip().rstrip(".").lower() if domain else None
         self.description = description
         self.created_at = time.time()
         self.hit_count = 0
@@ -117,10 +140,13 @@ class FirewallManager:
         self.current_network_type: str = NetworkType.UNMETERED
 
     def set_network_type(self, network_type: str):
-        self.current_network_type = network_type.upper()
+        norm = network_type.upper()
+        if norm not in NetworkType.VALID:
+            raise ValueError(f"Invalid network_type: '{network_type}'")
+        self.current_network_type = norm
 
     def set_lockdown_mode(self, enabled: bool):
-        self.lockdown_mode = enabled
+        self.lockdown_mode = bool(enabled)
 
     def add_rule(self, rule: FirewallRule) -> str:
         self.rules[rule.rule_id] = rule
@@ -173,10 +199,9 @@ class FirewallManager:
         if self.lockdown_mode:
             return FirewallAction.BLOCK, "LOCKDOWN_MODE"
 
-        # 2. Check App Isolation
+        # 2. Check App Isolation (allow loopback addresses only)
         if app_id and app_id in self.isolated_apps:
-            # Isolated apps can only access local or loopback addresses
-            if dest_ip not in ("127.0.0.1", "::1", "localhost"):
+            if not _is_loopback_destination(dest_ip):
                 return FirewallAction.BLOCK, "APP_ISOLATED"
 
         # 3. Check explicit Rules

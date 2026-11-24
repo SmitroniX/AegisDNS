@@ -1,9 +1,7 @@
 name: 🧮 Monthly alpha
 
 on:
-  workflow_dispatch: # to be able to run it manually
-  schedule:
-    - cron: '53 21 27 * *' # on 27 every month
+  workflow_dispatch: # manual trigger only
 
 jobs:
   evaluateChanges:

@@ -1,31 +1,20 @@
-# AegisDNS / RethinkCore
+# AegisDNS Core (`aegis-dns`)
 
-> **A customized, cross-platform DNS resolver, Ad-Blocker, and Network Firewall engine inspired by and reverse-engineered from [celzero/rethink-app](https://github.com/celzero/rethink-app) using REA MCP.**
+> **Zero-dependency Python 3 DNS resolver, CNAME-cloaking Ad-Blocker, Firewall, and WireGuard/WARP engine.**
 
 ---
 
 ## Architecture Overview
 
-RethinkDNS consists of two core components:
-1. **Android Application & VpnService (`rethink-app`)**:
-   - Manages Android `VpnService` TUN interface creation and lifecycle (`BraveVPNService.kt`).
-   - Evaluates per-app network permissions and state (`FirewallManager.kt`, `TunFirewallManager.kt`).
-   - Tracks DNS query logs, latency, and blocked status (`DnsLogTracker.kt`).
-   - Configures WireGuard multi-hop profiles (`WireguardManager.kt`).
-2. **Userspace Network Engine (`firestack` Go engine)**:
-   - Tun2socks userspace packet interceptor built on `gvisor`.
-   - Protocol-level DNS dispatcher supporting UDP 53, DoH, DoT, ODoH, and DNSCrypt.
-   - Flow-level connection tracking.
-
-**AegisDNS (`core/aegis`)** is our self-contained, high-performance, cross-platform implementation of this architecture:
-- **`dns_packet.py`**: Zero-dependency RFC 1035 wire-format DNS packet encoder and decoder with pointer loop protection, CNAME/PTR/MX/TXT/SOA/OPT/HTTPS compression pointer resolution, and label length validation.
-- **`blocklist.py`**: Multi-format blocklist engine supporting hosts file syntax, AdBlock Plus rules (`||domain^`, `||domain^$options`), exception/allowlist rules (`@@||domain^`), exact domain matching, and CIDR IP range blocking.
-- **`resolver.py`**: Split-tunneling DNS resolver with local blocklist interception (synthesizes `0.0.0.0` for A, `::` for AAAA, NODATA for other types), in-memory TTL caching with elapsed time decrement (RFC 1035 §7.4), transaction ID verification, and upstream UDP/DoH resolution supporting IPv4 and bracketed IPv6 endpoints.
-- **`firewall.py`**: Granular firewall rules engine supporting per-app UID, network conditions (Metered Cellular vs Unmetered Wi-Fi), background data blocking, CIDR IP filters, domain rules, and global lockdown.
+**AegisDNS (`core/aegis`)** provides a self-contained, cross-platform companion engine to the Android client and Go `firestack` stack:
+- **`dns_packet.py`**: Zero-dependency RFC 1035 / 3596 / 7766 wire-format DNS packet encoder and decoder with pointer loop & max-255-octet length protection, DNSSEC `AD`/`CD` flag preservation, partial compression pointer normalization for `CNAME`/`NS`/`PTR`/`MX`/`SOA`/`SRV`, `HTTPS`/`SVCB` parsing, and TCP 2-byte framing.
+- **`blocklist.py`**: Multi-format blocklist engine supporting `/etc/hosts` syntax, AdBlock DNS rules (`||domain^`, `||domain^$options`), allowlist exceptions (`@@||domain^`), safe skipping of cosmetic/URL-path rules, CIDR IP blocking, duplicate-free accounting, and CNAME-cloaking inspection.
+- **`resolver.py`**: Split-DNS resolver with local blocklist + CNAME-cloaking blocking (`0.0.0.0` / `::` / `NODATA`), upstream-scoped bounded LRU cache with RFC 1035 §7.4 TTL decay and RFC 2308 negative caching, UDP/TCP (with automatic `TC=1` TCP fallback), DoH, DoT (RFC 7858), and automatic upstream failover.
+- **`firewall.py`**: Granular firewall rules engine supporting per-app rules, metered vs unmetered network conditions, background data blocking, CIDR IP filters, domain rules, loopback-safe app isolation, and global lockdown.
 - **`connection_tracker.py`**: Real-time 5-tuple flow monitor with bandwidth tracking and circular history buffer.
-- **`wireguard.py`**: WireGuard configuration parser supporting multi-line `Address`, `DNS`, and `AllowedIPs` directives, bracketed IPv6 endpoints, Curve25519 32-byte key validator, and INI roundtrip serialization.
-- **`proxy.py`**: SOCKS5 client handshake and connect request builder (ATYP 0x01 IPv4, 0x04 IPv6, 0x03 Domain) and HTTP CONNECT proxy router.
-- **`service.py` & `api.py`**: Unified daemon orchestrator with Async UDP DNS server and HTTP REST management API.
+- **`wireguard.py`**: Pure-Python RFC 7748 Curve25519 keypair generation, live Cloudflare WARP registration (`POST` + `PATCH warp_enabled: true` + `ClientID`), multi-directive INI parser/serializer, and bracketed IPv6 endpoint validation.
+- **`proxy.py`**: SOCKS5 client handshake and connect request builder (`0x01` IPv4, `0x04` IPv6, `0x03` Domain) and per-app / streaming preset routing.
+- **`service.py` & `api.py`**: Unified daemon orchestrator with Async UDP + TCP DNS listeners and a hardened HTTP REST management API (proper HTTP status phrases, body cap, timeouts, CORS preflight, optional Bearer token auth).
 
 ---
 
@@ -34,47 +23,43 @@ RethinkDNS consists of two core components:
 ### 1. Run the Test Suite
 
 ```bash
-python3 -m unittest discover -s /home/ubuntu/rethink-app/core/tests -p "test_*.py" -v
+python3 -m unittest discover -s core/tests -p "test_*.py" -v
 ```
-All 53 unit and integration tests execute in ~0.08s.
+All 98 unit and integration tests execute in ~2s.
 
 ### 2. CLI Usage (`aegis`)
 
-The CLI is installed system-wide or can be invoked via `python3 -m aegis.cli`:
-
 ```bash
-# Blocked domain (returns 0.0.0.0 for A, :: for AAAA via blocklist):
-aegis resolve doubleclick.net --blocklist /home/ubuntu/rethink-app/core/data/default_blocklist.txt
+# Install editable package
+pip install -e core/
 
-# Allowed domain (resolved via upstream DNS):
-aegis resolve example.com --blocklist /home/ubuntu/rethink-app/core/data/default_blocklist.txt
+# Resolve with AdGuard DoT or blocklist
+aegis resolve example.com --dot --type AAAA
+aegis resolve doubleclick.net --blocklist core/data/default_blocklist.txt
 
-# Validate a WireGuard profile:
-aegis wireguard-check /path/to/profile.conf
+# Test blocklist matching
+aegis blocklist-test doubleclick.net --blocklist core/data/default_blocklist.txt
 
-# Start daemon with REST API:
-aegis start --dns-port 5353 --api-port 8053 --blocklist /home/ubuntu/rethink-app/core/data/default_blocklist.txt
+# Register a live Cloudflare WARP profile (with ClientID)
+aegis register-warp --strict -o warp.conf
+aegis wireguard-check warp.conf
+
+# Start UDP + TCP DNS daemon with REST API
+aegis start --dns-port 5353 --tcp-dns --dot --api-port 8053 --blocklist core/data/default_blocklist.txt
 ```
 
 ### 3. REST API Endpoints
 
-- `GET http://127.0.0.1:8053/health`
-- `GET http://127.0.0.1:8053/stats`
-- `GET http://127.0.0.1:8053/logs/dns`
-- `GET http://127.0.0.1:8053/logs/connections`
-- `GET http://127.0.0.1:8053/rules/firewall`
-- `POST http://127.0.0.1:8053/rules/firewall`
-- `DELETE http://127.0.0.1:8053/rules/firewall/<rule_id>`
-- `POST http://127.0.0.1:8053/rules/lockdown`
-- `POST http://127.0.0.1:8053/blocklist/reload`
-- `POST http://127.0.0.1:8053/dns/resolve`
-- `GET http://127.0.0.1:8053/rules/split-dns`
-- `POST http://127.0.0.1:8053/rules/split-dns`
-- `DELETE http://127.0.0.1:8053/rules/split-dns/<domain>`
-- `POST http://127.0.0.1:8053/rules/split-dns/presets`
-- `GET http://127.0.0.1:8053/streaming/presets`
-- `POST http://127.0.0.1:8053/streaming/apply-preset`
-- `GET http://127.0.0.1:8053/rules/split-tunnel`
-- `POST http://127.0.0.1:8053/rules/split-tunnel`
-- `DELETE http://127.0.0.1:8053/rules/split-tunnel/<app_id>`
-- `GET http://127.0.0.1:8053/wireguard/warp-preset`
+- `GET /health` (unauthenticated health probe)
+- `GET /stats`
+- `GET /logs/dns?limit=100&search=...`
+- `GET /logs/connections?limit=100&app_id=...`
+- `GET /rules/firewall`, `POST /rules/firewall`, `DELETE /rules/firewall/<rule_id>`
+- `POST /rules/lockdown`
+- `POST /blocklist/reload`, `GET /blocklist/check?domain=...`, `POST /blocklist/domains`, `DELETE /blocklist/domains/<domain>`
+- `GET /dns/presets`, `POST /dns/upstream`, `POST /cache/clear`, `POST /dns/resolve`
+- `GET /rules/split-dns`, `POST /rules/split-dns`, `DELETE /rules/split-dns/<domain>`, `POST /rules/split-dns/presets`
+- `GET /streaming/presets`, `POST /streaming/apply-preset`
+- `GET /rules/split-tunnel`, `POST /rules/split-tunnel`, `DELETE /rules/split-tunnel/<app_id>`
+- `GET /wireguard/warp-preset`, `POST /wireguard/register-warp`, `POST /wireguard/validate`
+- `GET /wireguard/locations`, `GET /wireguard/location-preset?country=JP`

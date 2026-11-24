@@ -1,17 +1,24 @@
 """
 Unified AegisDNS Service Orchestrator.
-Combines DNS resolving, firewall policies, connection tracking, blocklist filtering,
-and metrics into a unified daemon.
+Combines DNS resolving (UDP + TCP), firewall policies, connection tracking,
+blocklist filtering, CNAME cloaking protection, and metrics into a unified daemon.
 """
 
 from __future__ import annotations
 import asyncio
 import collections
+import struct
 import time
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Set
 from .dns_packet import DNSPacket, RecordType, RCode
 from .blocklist import BlocklistManager
-from .resolver import DNSResolver, DEFAULT_UPSTREAM_UDP, DEFAULT_UPSTREAM_DOH, DNS_PRESETS
+from .resolver import (
+    DNSResolver,
+    DEFAULT_UPSTREAM_UDP,
+    DEFAULT_UPSTREAM_DOH,
+    DEFAULT_UPSTREAM_DOT,
+    DNS_PRESETS,
+)
 from .firewall import FirewallManager, FirewallRule, FirewallAction
 from .connection_tracker import ConnectionTracker, ConnectionFlow
 from .wireguard import WireGuardConfig
@@ -23,8 +30,13 @@ class AegisService:
         self,
         upstream_dns: str = DEFAULT_UPSTREAM_UDP,
         upstream_doh: str = DEFAULT_UPSTREAM_DOH,
+        upstream_dot: str = DEFAULT_UPSTREAM_DOT,
         preset: Optional[str] = None,
         use_doh: bool = False,
+        use_dot: bool = False,
+        block_cname_cloaking: bool = True,
+        fallback_udp: Optional[str] = "94.140.14.14:53",
+        max_cache_size: int = 10000,
         default_firewall_action: str = FirewallAction.ALLOW,
     ):
         self.blocklist = BlocklistManager()
@@ -39,12 +51,19 @@ class AegisService:
             blocklist=self.blocklist,
             upstream_udp=upstream_dns,
             upstream_doh=upstream_doh,
+            upstream_dot=upstream_dot,
             preset=preset,
             use_doh=use_doh,
+            use_dot=use_dot,
+            max_cache_size=max_cache_size,
+            block_cname_cloaking=block_cname_cloaking,
+            fallback_udp=fallback_udp,
             on_query_logged=self._on_query_logged,
         )
 
         self._dns_transport = None
+        self._tcp_dns_server = None
+        self._pending_tasks: Set[asyncio.Task] = set()
         self.is_running = False
         self.start_time = time.time()
 
@@ -65,6 +84,7 @@ class AegisService:
 
     async def start_dns_server(self, host: str = "127.0.0.1", port: int = 5353):
         loop = asyncio.get_running_loop()
+        service_ref = self
 
         class DNSProtocol(asyncio.DatagramProtocol):
             def __init__(self, service: AegisService):
@@ -75,11 +95,13 @@ class AegisService:
                 self.transport = transport
 
             def datagram_received(self, data, addr):
-                asyncio.create_task(self._process_packet(data, addr))
+                task = asyncio.create_task(self._process_packet(data, addr))
+                service_ref._pending_tasks.add(task)
+                task.add_done_callback(service_ref._pending_tasks.discard)
 
             async def _process_packet(self, data, addr):
                 resp = await self.service.handle_dns_datagram(data, addr)
-                if self.transport and resp:
+                if self.transport and not self.transport.is_closing() and resp:
                     self.transport.sendto(resp, addr)
 
         transport, _ = await loop.create_datagram_endpoint(
@@ -88,10 +110,43 @@ class AegisService:
         self._dns_transport = transport
         self.is_running = True
 
+    async def start_tcp_dns_server(self, host: str = "127.0.0.1", port: int = 5353):
+        """Starts an RFC 7766 TCP DNS listener alongside the UDP server."""
+        async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+            peer = writer.get_extra_info("peername") or ("127.0.0.1", 0)
+            try:
+                len_bytes = await asyncio.wait_for(reader.readexactly(2), timeout=5.0)
+                msg_len = struct.unpack("!H", len_bytes)[0]
+                if msg_len == 0 or msg_len > 65535:
+                    return
+                query_bytes = await asyncio.wait_for(reader.readexactly(msg_len), timeout=5.0)
+                resp_bytes = await self.handle_dns_datagram(query_bytes, (peer[0], peer[1]))
+                writer.write(struct.pack("!H", len(resp_bytes)) + resp_bytes)
+                await asyncio.wait_for(writer.drain(), timeout=5.0)
+            except Exception:
+                pass
+            finally:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+
+        self._tcp_dns_server = await asyncio.start_server(handle_tcp_client, host, port)
+
+    async def stop_tcp_dns_server(self):
+        if self._tcp_dns_server:
+            self._tcp_dns_server.close()
+            await self._tcp_dns_server.wait_closed()
+            self._tcp_dns_server = None
+
     def stop_dns_server(self):
         if self._dns_transport:
             self._dns_transport.close()
             self._dns_transport = None
+        for task in list(self._pending_tasks):
+            task.cancel()
+        self._pending_tasks.clear()
         self.is_running = False
 
     def evaluate_and_track_connection(
@@ -160,12 +215,21 @@ class AegisService:
             "dns": {
                 "total_queries": total_q,
                 "blocked_queries": blocked_q,
+                "cname_blocked_queries": res_stats.get("cname_blocked_queries", 0),
                 "cached_queries": res_stats["cached_queries"],
+                "cache_size": len(self.resolver.cache),
                 "upstream_queries": res_stats["upstream_queries"],
                 "split_queries": res_stats.get("split_queries", 0),
+                "tcp_fallbacks": res_stats.get("tcp_fallbacks", 0),
+                "failover_queries": res_stats.get("failover_queries", 0),
                 "split_rules_count": len(self.resolver.split_rules),
                 "block_rate_percent": block_pct,
                 "rules_loaded": self.blocklist.stats["rules_loaded"],
+                "upstream_udp": self.resolver.upstream_udp,
+                "upstream_doh": self.resolver.upstream_doh,
+                "upstream_dot": self.resolver.upstream_dot,
+                "use_doh": self.resolver.use_doh,
+                "use_dot": self.resolver.use_dot,
                 "top_blocked_domains": sorted(top_blocked.items(), key=lambda x: x[1], reverse=True)[:5],
                 "top_allowed_domains": sorted(top_allowed.items(), key=lambda x: x[1], reverse=True)[:5],
             },

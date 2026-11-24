@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aegis-dns"
-version = "1.0.0"
+version = "0.3.0"
 description = "AegisDNS / RethinkCore - High-Performance DNS Resolver, Firewall, and WireGuard Engine"
 readme = "README.md"
 requires-python = ">=3.9"

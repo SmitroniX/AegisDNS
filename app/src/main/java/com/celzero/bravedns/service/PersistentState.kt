@@ -213,10 +213,10 @@ class PersistentState(context: Context) : SimpleKrate(context), KoinComponent {
     // default: true for play store flavor
     var allowBypass by booleanPref("allow_bypass").withDefault<Boolean>(Utilities.isPlayStoreFlavour())
 
-    // user set among AppConfig.DnsType enum; RETHINK_REMOTE is default which is Rethink-DoH
+    // user set among AppConfig.DnsType enum; DOH (AdGuard Ad-Blocking) is the AegisDNS default
     var dnsType by
         intPref("dns_type")
-            .withDefault<Int>(AppConfig.DnsType.RETHINK_REMOTE.type)
+            .withDefault<Int>(AppConfig.DnsType.DOH.type)
 
     // whether the app must attempt to startup on reboot if it was running before shutdown
     var prefAutoStartBootUp by booleanPref("auto_start_on_boot").withDefault<Boolean>(true)

@@ -1,5 +1,5 @@
 """
-RFC 1035 Compliant DNS Packet Parser and Serializer for AegisDNS / RethinkCore.
+RFC 1035 / RFC 3596 / RFC 7766 Compliant DNS Packet Parser and Serializer for AegisDNS / RethinkCore.
 Zero-dependency, high-performance wire format decoding and encoding.
 """
 
@@ -7,6 +7,9 @@ from __future__ import annotations
 import struct
 import socket
 from typing import List, Tuple, Optional
+
+
+MAX_DNS_NAME_WIRE_LEN = 255
 
 
 class RecordType:
@@ -20,26 +23,46 @@ class RecordType:
     AAAA = 28
     SRV = 33
     OPT = 41
+    SVCB = 64
     HTTPS = 65
     ANY = 255
 
+    _NAME_TO_TYPE = {
+        "A": 1,
+        "NS": 2,
+        "CNAME": 5,
+        "SOA": 6,
+        "PTR": 12,
+        "MX": 15,
+        "TXT": 16,
+        "AAAA": 28,
+        "SRV": 33,
+        "OPT": 41,
+        "SVCB": 64,
+        "HTTPS": 65,
+        "ANY": 255,
+    }
+
+    _TYPE_TO_NAME = {v: k for k, v in _NAME_TO_TYPE.items()}
+
     @classmethod
     def to_string(cls, rtype: int) -> str:
-        names = {
-            1: "A",
-            2: "NS",
-            5: "CNAME",
-            6: "SOA",
-            12: "PTR",
-            15: "MX",
-            16: "TXT",
-            28: "AAAA",
-            33: "SRV",
-            41: "OPT",
-            65: "HTTPS",
-            255: "ANY",
-        }
-        return names.get(rtype, f"TYPE{rtype}")
+        return cls._TYPE_TO_NAME.get(rtype, f"TYPE{rtype}")
+
+    @classmethod
+    def from_string(cls, name: str) -> int:
+        upper = name.strip().upper()
+        if upper in cls._NAME_TO_TYPE:
+            return cls._NAME_TO_TYPE[upper]
+        if upper.startswith("TYPE") and upper[4:].isdigit():
+            val = int(upper[4:])
+            if 0 <= val <= 65535:
+                return val
+        if upper.isdigit():
+            val = int(upper)
+            if 0 <= val <= 65535:
+                return val
+        raise ValueError(f"Unknown DNS record type: '{name}'")
 
 
 class RCode:
@@ -66,6 +89,8 @@ class DNSHeader:
         ancount: int = 0,
         nscount: int = 0,
         arcount: int = 0,
+        ad: int = 0,
+        cd: int = 0,
     ):
         self.id = id & 0xFFFF
         self.qr = qr & 1
@@ -74,6 +99,8 @@ class DNSHeader:
         self.tc = tc & 1
         self.rd = rd & 1
         self.ra = ra & 1
+        self.ad = ad & 1
+        self.cd = cd & 1
         self.rcode = rcode & 0xF
         self.qdcount = qdcount
         self.ancount = ancount
@@ -88,6 +115,8 @@ class DNSHeader:
             | (self.tc << 9)
             | (self.rd << 8)
             | (self.ra << 7)
+            | (self.ad << 5)
+            | (self.cd << 4)
             | (self.rcode & 0xF)
         )
         return struct.pack(
@@ -111,9 +140,11 @@ class DNSHeader:
         tc = (flags >> 9) & 1
         rd = (flags >> 8) & 1
         ra = (flags >> 7) & 1
+        ad = (flags >> 5) & 1
+        cd = (flags >> 4) & 1
         rcode = flags & 0xF
         return (
-            cls(id, qr, opcode, aa, tc, rd, ra, rcode, qdcount, ancount, nscount, arcount),
+            cls(id, qr, opcode, aa, tc, rd, ra, rcode, qdcount, ancount, nscount, arcount, ad=ad, cd=cd),
             offset + 12,
         )
 
@@ -132,15 +163,31 @@ def encode_dns_name(name: str) -> bytes:
         res.append(len(bpart))
         res.extend(bpart)
     res.append(0)
+    if len(res) > MAX_DNS_NAME_WIRE_LEN:
+        raise ValueError(f"DNS name exceeds {MAX_DNS_NAME_WIRE_LEN} wire octets: {name}")
     return bytes(res)
 
 
+def _wire_name_has_pointer(data: bytes, offset: int = 0) -> bool:
+    """Returns True if a DNS wire-encoded name starting at offset uses any compression pointer."""
+    pos = offset
+    while pos < len(data):
+        length = data[pos]
+        if length == 0:
+            return False
+        if (length & 0xC0) == 0xC0:
+            return True
+        pos += 1 + length
+    return False
+
+
 def decode_dns_name(data: bytes, offset: int) -> Tuple[str, int]:
-    """Decodes a DNS name handling compression pointers (RFC 1035)."""
+    """Decodes a DNS name handling compression pointers (RFC 1035) with loop and length guards."""
     labels = []
     jumped = False
     return_offset = offset
     visited_pointers = set()
+    wire_octets = 0
 
     while True:
         if offset >= len(data):
@@ -148,6 +195,9 @@ def decode_dns_name(data: bytes, offset: int) -> Tuple[str, int]:
         length = data[offset]
 
         if length == 0:
+            wire_octets += 1
+            if wire_octets > MAX_DNS_NAME_WIRE_LEN:
+                raise ValueError("DNS name exceeds maximum 255-octet wire length")
             if not jumped:
                 return_offset = offset + 1
             break
@@ -159,6 +209,8 @@ def decode_dns_name(data: bytes, offset: int) -> Tuple[str, int]:
             if offset + 1 >= len(data):
                 raise ValueError("Truncated compression pointer")
             ptr = ((length & 0x3F) << 8) | data[offset + 1]
+            if ptr >= len(data):
+                raise ValueError("Compression pointer exceeds packet length")
             if ptr in visited_pointers:
                 raise ValueError("Pointer loop detected in DNS compression")
             visited_pointers.add(ptr)
@@ -172,6 +224,10 @@ def decode_dns_name(data: bytes, offset: int) -> Tuple[str, int]:
 
         if length > 63:
             raise ValueError(f"DNS label length exceeds 63 octets: {length}")
+
+        wire_octets += 1 + length
+        if wire_octets > MAX_DNS_NAME_WIRE_LEN:
+            raise ValueError("DNS name exceeds maximum 255-octet wire length")
 
         offset += 1
         if offset + length > len(data):
@@ -222,7 +278,7 @@ class DNSRR:
         self.rclass = rclass
         self.ttl = ttl
         self.rdata = rdata
-        self.rdata_str = rdata_str or self._parse_rdata_str()
+        self.rdata_str = rdata_str if rdata_str is not None else self._parse_rdata_str()
 
     @classmethod
     def _parse_rdata_str_with_packet(
@@ -263,6 +319,31 @@ class DNSRR:
                 except Exception:
                     pass
             return rdata.hex()
+        elif rtype == RecordType.SRV:
+            if len(rdata) >= 7:
+                priority, weight, port = struct.unpack_from("!HHH", rdata, 0)
+                if full_packet is not None and 0 <= rdata_offset + 6 < len(full_packet):
+                    try:
+                        target, _ = decode_dns_name(full_packet, rdata_offset + 6)
+                        return f"{priority} {weight} {port} {target.rstrip('.') or '.'}"
+                    except Exception:
+                        pass
+                try:
+                    target, _ = decode_dns_name(rdata, 6)
+                    return f"{priority} {weight} {port} {target.rstrip('.') or '.'}"
+                except Exception:
+                    pass
+            return rdata.hex()
+        elif rtype in (RecordType.HTTPS, RecordType.SVCB):
+            if len(rdata) >= 3:
+                priority = struct.unpack_from("!H", rdata, 0)[0]
+                try:
+                    target, _ = decode_dns_name(rdata, 2)
+                    target_str = target.rstrip(".") or "."
+                    return f"{priority} {target_str}"
+                except Exception:
+                    pass
+            return rdata.hex()
         elif rtype == RecordType.TXT:
             chunks = []
             idx = 0
@@ -273,15 +354,16 @@ class DNSRR:
                 idx += chunk_len
             return "".join(chunks)
         elif rtype == RecordType.SOA:
-            if full_packet is not None and 0 <= rdata_offset < len(full_packet):
-                try:
-                    mname, off = decode_dns_name(full_packet, rdata_offset)
-                    rname, off = decode_dns_name(full_packet, off)
-                    if off + 20 <= len(full_packet):
-                        serial, refresh, retry, expire, minimum = struct.unpack_from("!IIIII", full_packet, off)
-                        return f"{mname.rstrip('.')} {rname.rstrip('.')} {serial} {refresh} {retry} {expire} {minimum}"
-                except Exception:
-                    pass
+            src = full_packet if (full_packet is not None and 0 <= rdata_offset < len(full_packet)) else rdata
+            start = rdata_offset if src is full_packet else 0
+            try:
+                mname, off = decode_dns_name(src, start)
+                rname, off = decode_dns_name(src, off)
+                if off + 20 <= len(src):
+                    serial, refresh, retry, expire, minimum = struct.unpack_from("!IIIII", src, off)
+                    return f"{mname.rstrip('.')} {rname.rstrip('.')} {serial} {refresh} {retry} {expire} {minimum}"
+            except Exception:
+                pass
             return rdata.hex()
         return rdata.hex()
 
@@ -291,15 +373,29 @@ class DNSRR:
     def to_bytes(self) -> bytes:
         wire_rdata = self.rdata
         if self.rtype in (RecordType.CNAME, RecordType.NS, RecordType.PTR) and self.rdata_str:
-            # If rdata contains a compression pointer, normalize to self-contained label bytes
-            if not wire_rdata or (wire_rdata[0] & 0xC0) == 0xC0:
+            # Normalize any compressed wire name (including partial pointers like \x03www\xc0\x0c)
+            if not wire_rdata or _wire_name_has_pointer(wire_rdata, 0):
                 wire_rdata = encode_dns_name(self.rdata_str)
         elif self.rtype == RecordType.MX and self.rdata_str:
-            if not wire_rdata or (len(wire_rdata) >= 3 and (wire_rdata[2] & 0xC0) == 0xC0):
+            if not wire_rdata or (len(wire_rdata) >= 3 and _wire_name_has_pointer(wire_rdata, 2)):
                 parts = self.rdata_str.split(None, 1)
                 pref = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 10
                 target = parts[1] if len(parts) > 1 else ""
                 wire_rdata = struct.pack("!H", pref) + encode_dns_name(target)
+        elif self.rtype == RecordType.SRV and self.rdata_str:
+            if not wire_rdata or (len(wire_rdata) >= 7 and _wire_name_has_pointer(wire_rdata, 6)):
+                parts = self.rdata_str.split(None, 3)
+                if len(parts) == 4 and all(p.isdigit() for p in parts[:3]):
+                    wire_rdata = struct.pack("!HHH", int(parts[0]), int(parts[1]), int(parts[2])) + encode_dns_name(parts[3])
+        elif self.rtype == RecordType.SOA and self.rdata_str:
+            if not wire_rdata or _wire_name_has_pointer(wire_rdata, 0):
+                parts = self.rdata_str.split()
+                if len(parts) == 7 and all(p.isdigit() for p in parts[2:]):
+                    wire_rdata = (
+                        encode_dns_name(parts[0])
+                        + encode_dns_name(parts[1])
+                        + struct.pack("!IIIII", *(int(p) for p in parts[2:]))
+                    )
 
         res = bytearray(encode_dns_name(self.name))
         res.extend(struct.pack("!HHIH", self.rtype, self.rclass, self.ttl, len(wire_rdata)))
@@ -345,6 +441,21 @@ class DNSPacket:
             out.extend(ar.to_bytes())
         return bytes(out)
 
+    def to_tcp_bytes(self) -> bytes:
+        """Serializes packet with RFC 7766 2-byte big-endian length prefix for TCP/DoT."""
+        wire = self.to_bytes()
+        return struct.pack("!H", len(wire)) + wire
+
+    @classmethod
+    def from_tcp_bytes(cls, data: bytes) -> DNSPacket:
+        """Parses a length-prefixed TCP/DoT DNS message."""
+        if len(data) < 2:
+            raise ValueError("Truncated TCP DNS length prefix")
+        msg_len = struct.unpack_from("!H", data, 0)[0]
+        if len(data) < 2 + msg_len:
+            raise ValueError(f"Truncated TCP DNS message: expected {msg_len} bytes, got {len(data) - 2}")
+        return cls.from_bytes(data[2 : 2 + msg_len])
+
     @classmethod
     def from_bytes(cls, data: bytes) -> DNSPacket:
         pkt = cls()
@@ -380,6 +491,7 @@ class DNSPacket:
             rd=self.header.rd,
             ra=1,
             rcode=rcode,
+            cd=self.header.cd,
         )
         resp.questions = list(self.questions)
         return resp
@@ -395,6 +507,10 @@ class DNSPacket:
     def add_cname_record(self, name: str, target: str, ttl: int = 300) -> None:
         raw_target = encode_dns_name(target)
         self.answers.append(DNSRR(name=name, rtype=RecordType.CNAME, ttl=ttl, rdata=raw_target, rdata_str=target))
+
+    def add_ns_record(self, name: str, target: str, ttl: int = 300) -> None:
+        raw_target = encode_dns_name(target)
+        self.answers.append(DNSRR(name=name, rtype=RecordType.NS, ttl=ttl, rdata=raw_target, rdata_str=target))
 
     def add_ptr_record(self, name: str, target: str, ttl: int = 300) -> None:
         raw_target = encode_dns_name(target)
@@ -412,6 +528,20 @@ class DNSPacket:
     def add_mx_record(self, name: str, preference: int, exchange: str, ttl: int = 300) -> None:
         raw_data = struct.pack("!H", preference) + encode_dns_name(exchange)
         self.answers.append(DNSRR(name=name, rtype=RecordType.MX, ttl=ttl, rdata=raw_data, rdata_str=f"{preference} {exchange}"))
+
+    def add_srv_record(
+        self, name: str, priority: int, weight: int, port: int, target: str, ttl: int = 300
+    ) -> None:
+        raw_data = struct.pack("!HHH", priority, weight, port) + encode_dns_name(target)
+        self.answers.append(
+            DNSRR(
+                name=name,
+                rtype=RecordType.SRV,
+                ttl=ttl,
+                rdata=raw_data,
+                rdata_str=f"{priority} {weight} {port} {target}",
+            )
+        )
 
     def add_blocked_response(
         self,

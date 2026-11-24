@@ -378,7 +378,7 @@
     <string name="brave_dns_connect_mode_change_firewall" translatable="true">Choose Mode.</string>
     <string name="brave_dns_connect_mode_change_dns" translatable="true">Choose Mode.</string>
 
-    <string name="default_dns_name" translatable="true">RDNS Default</string>
+    <string name="default_dns_name" translatable="true">AdGuard DNS (Ad-Blocking)</string>
 
     <string name="custom_url_error_invalid_url" translatable="true">Invalid URL</string>
 
@@ -1801,12 +1801,12 @@
     <string name="setup_wireguard" translatable="true">Setup WireGuard</string>
     <string name="wireguard_description" translatable="true">WireGuard as a proxy.</string>
     <string name="new_warp_config_desc" translatable="true">Fetch WARP configuration from server</string>
-    <string name="new_warp_error_toast" translatable="true">Unable to fetch WARP configuration</string>
+    <string name="new_warp_error_toast" translatable="true">WARP registration failed. Check your internet connection and try again.</string>
     <string name="new_warp_invalid_config_toast" translatable="true">Invalid WARP configuration</string>
     <string name="wg_quick_setup_warp_btn" translatable="true">⚡ 1-Click Setup: Cloudflare WARP</string>
     <string name="wg_quick_setup_warp_desc" translatable="true">Instantly configure a free, fast Anycast WireGuard tunnel with zero setup</string>
-    <string name="wg_configuring_warp" translatable="true">Setting up Cloudflare WARP WireGuard...</string>
-    <string name="wg_warp_configured_success" translatable="true">Cloudflare WARP configured! Switch toggle to activate</string>
+    <string name="wg_configuring_warp" translatable="true">Registering Cloudflare WARP tunnel…</string>
+    <string name="wg_warp_configured_success" translatable="true">Cloudflare WARP tunnel activated!</string>
     <string name="wg_add_tunnel_dialog_title" translatable="true">Add WireGuard Tunnel</string>
     <string name="wg_add_tunnel_option_warp" translatable="true">⚡ 1-Click Cloudflare WARP (Free Anycast)</string>
     <string name="wg_add_tunnel_option_location" translatable="true">🌍 Location-Wise VPN (Country Presets)</string>
@@ -1814,8 +1814,9 @@
     <string name="wg_location_vpn_btn" translatable="true">🌍 Location-Wise VPN</string>
     <string name="wg_location_vpn_desc" translatable="true">Choose a specific country or region for your VPN connection</string>
     <string name="wg_location_vpn_dialog_title" translatable="true">Select VPN Location</string>
-    <string name="wg_configuring_location_vpn" translatable="true">Setting up VPN for %1$s...</string>
-    <string name="wg_location_vpn_configured_success" translatable="true">%1$s VPN configured! Switch toggle to activate</string>
+    <string name="wg_configuring_location_vpn" translatable="true">Registering VPN for %1$s…</string>
+    <string name="wg_location_vpn_configured_success" translatable="true">%1$s VPN activated!</string>
+    <string name="wg_vpn_permission_denied" translatable="true">VPN permission is required to activate the tunnel</string>
 
     <string name="one_wg_apps_added" translatable="true">Routing all apps</string>
 

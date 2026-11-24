@@ -827,6 +827,10 @@ class HomeScreenFragment : Fragment(R.layout.fragment_home_screen) {
             repeatMode = ValueAnimator.RESTART
             interpolator = AccelerateDecelerateInterpolator()
             addUpdateListener { animator ->
+                if (view == null || !isAdded) {
+                    animator.cancel()
+                    return@addUpdateListener
+                }
                 val alphaVal = animator.animatedValue as Float
                 b.fhsProtectionLevelTxt.alpha = alphaVal
                 b.fhsActiveSinceTxt.alpha = alphaVal * 0.7f
@@ -848,11 +852,13 @@ class HomeScreenFragment : Fragment(R.layout.fragment_home_screen) {
     private fun setupButtonTouchFeedback() {
         val btn = b.fhsDnsOnOffBtn
         btn.setOnTouchListener { v, event ->
-            when (event.action) {
+            when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    v.animate().cancel()
                     v.animate().scaleX(0.95f).scaleY(0.95f).setDuration(100).start()
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    v.animate().cancel()
                     v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(160)
                         .setInterpolator(OvershootInterpolator(2.2f))
                         .start()
@@ -872,11 +878,13 @@ class HomeScreenFragment : Fragment(R.layout.fragment_home_screen) {
         )
         cards.forEach { card ->
             card.setOnTouchListener { v, event ->
-                when (event.action) {
+                when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
+                        v.animate().cancel()
                         v.animate().scaleX(0.98f).scaleY(0.98f).setDuration(110).start()
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        v.animate().cancel()
                         v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(170)
                             .setInterpolator(OvershootInterpolator(1.8f))
                             .start()
@@ -896,10 +904,12 @@ class HomeScreenFragment : Fragment(R.layout.fragment_home_screen) {
             b.fhsCardLogsLl
         )
         cards.forEachIndexed { index, card ->
+            val targetAlpha = card.alpha.takeIf { it > 0f } ?: 1f
+            card.animate().cancel()
             card.alpha = 0f
             card.translationY = 28f
             card.animate()
-                .alpha(1f)
+                .alpha(targetAlpha)
                 .translationY(0f)
                 .setDuration(320L)
                 .setStartDelay(index * 45L)
@@ -3259,6 +3269,14 @@ class HomeScreenFragment : Fragment(R.layout.fragment_home_screen) {
         dnsObserverActive = false
         stopBorderAnimation()
         stopStatusPulseAnimation()
+        listOf(
+            b.fhsDnsOnOffBtn,
+            b.fhsProtectionBar,
+            b.fhsCardDnsLl,
+            b.fhsCardProxyLl,
+            b.fhsCardAppsCv,
+            b.fhsCardLogsLl
+        ).forEach { it.animate().cancel() }
         lastGridSignature = null
         lastGridSignatureMode = null
         // ViewPager2 keeps a global reference to its callback; unregistering
